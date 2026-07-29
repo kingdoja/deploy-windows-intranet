@@ -1,0 +1,4 @@
+interface:
+  display_name: "Windows 内网蓝绿部署"
+  short_description: "为 Node/Vite 项目生成并验证 Windows 内网蓝绿部署方案"
+  default_prompt: "Use $deploy-windows-intranet to audit this project and generate a safe Windows intranet blue-green deployment package."

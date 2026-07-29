@@ -1,0 +1,46 @@
+# Acceptance Checklist
+
+## Before Installation
+
+- Repository instructions and current worktree state are understood.
+- Every configured test, build, entry, include, and static-output path exists.
+- Every API health endpoint reflects dependency readiness, not merely process liveness.
+- Workers have a verified graceful-stop or lease-recovery strategy.
+- Persistent data and secret locations are outside releases.
+- Database migrations support both active and rollback versions.
+- Internal IP reservation, DNS, firewall CIDR, and service ownership are agreed with IT.
+- Backup is application-consistent and has an off-host destination, or the missing control is explicitly accepted.
+- `preflight.ps1` reports no blocking errors.
+
+## First Installation
+
+- Caddy and WinSW downloads match pinned hashes.
+- Only the intended firewall port and remote addresses are created.
+- All generated Windows services have expected executable, working directory, environment, startup type, and recovery settings.
+- The first release passes health checks through loopback and through the stable intranet URL.
+- Static pages and APIs return expected responses from a second intranet machine.
+- Reboot restores Caddy, the active APIs, workers, and memory guard.
+
+## Release and Rollback
+
+- A new release starts in the inactive slot while the stable URL remains healthy.
+- Failed tests, build, dependency installation, or health checks do not alter the active slot.
+- Caddy reload switches APIs only after all new APIs are ready.
+- Old workers drain or safely release work before their timeout.
+- Rollback restores the previous frontend and APIs without changing persistent data.
+- A forced inactive-slot API crash is automatically recovered without affecting the stable URL.
+
+## Backup and Recovery
+
+- Scheduled backup runs under its configured service account.
+- Backup output includes databases, uploaded media, configuration required for recovery, and a manifest.
+- Backup copies leave the host or disk on an approved schedule.
+- A restore drill is performed into an isolated directory and the restored application passes health and data checks.
+- Retention and failed-backup notification are documented.
+
+## Handoff
+
+- The generated Runbook contains real URLs, paths, commands, owners, maintenance windows, backup destination, and escalation contacts.
+- Operators can run status, deploy, rollback, backup, and restore without Codex.
+- Known single-host risks and postponed controls are recorded.
+

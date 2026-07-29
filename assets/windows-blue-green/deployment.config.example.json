@@ -1,0 +1,85 @@
+{
+  "schemaVersion": 1,
+  "appName": "Intranet App",
+  "servicePrefix": "IntranetApp",
+  "productionRoot": "C:\\ProgramData\\IntranetApp",
+  "listenPort": 80,
+  "publicOrigins": [
+    "http://10.0.0.10"
+  ],
+  "firewallRemoteAddresses": [
+    "LocalSubnet"
+  ],
+  "tools": {
+    "caddyVersion": "2.11.4",
+    "caddySha256": "1708333F79E274C7697285AFE6D592AB39314E0B131E9EC6BEA08AD27DF62EBF",
+    "winswVersion": "2.12.0",
+    "winswSha256": "05B82D46AD331CC16BDC00DE5C6332C1EF818DF8CEEFCD49C726553209B3A0DA"
+  },
+  "release": {
+    "testCommand": {
+      "executable": "npm.cmd",
+      "arguments": ["test"]
+    },
+    "buildCommand": {
+      "executable": "npm.cmd",
+      "arguments": ["run", "build"]
+    },
+    "installCommand": {
+      "executable": "npm.cmd",
+      "arguments": ["ci", "--omit=dev", "--no-audit", "--no-fund"]
+    },
+    "includeDirectories": ["server", "shared", "dist"],
+    "includeFiles": ["package.json", "package-lock.json"]
+  },
+  "staticSite": {
+    "enabled": true,
+    "outputDirectory": "dist"
+  },
+  "productionRootEnvironment": "APP_PRODUCTION_ROOT",
+  "allowedOriginsEnvironment": "APP_ALLOWED_ORIGINS",
+  "commonEnvironment": {},
+  "services": [
+    {
+      "name": "api",
+      "displayName": "API",
+      "type": "api",
+      "entry": "server\\api.js",
+      "portEnvironment": "PORT",
+      "bluePort": 18100,
+      "greenPort": 28100,
+      "healthPath": "/api/health",
+      "routePaths": ["/api/*", "/uploads/*"],
+      "stopTimeoutSeconds": 60,
+      "memoryLimitMb": 1536,
+      "environment": {}
+    },
+    {
+      "name": "worker",
+      "displayName": "Worker",
+      "type": "worker",
+      "entry": "server\\worker.js",
+      "stopTimeoutSeconds": 1320,
+      "memoryLimitMb": 6144,
+      "environment": {}
+    }
+  ],
+  "memoryGuard": {
+    "enabled": true,
+    "pollSeconds": 30,
+    "sustainedSeconds": 300
+  },
+  "backup": {
+    "enabled": false,
+    "schedule": "02:30",
+    "command": {
+      "executable": "node.exe",
+      "arguments": ["scripts\\production-backup.mjs"]
+    }
+  },
+  "power": {
+    "disableAcSleep": true,
+    "disableAcHibernate": true
+  }
+}
+
