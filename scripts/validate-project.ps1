@@ -15,7 +15,7 @@ if (-not (Test-Path -LiteralPath $validator)) { throw "Missing generated validat
 
 & $validator -ConfigPath $configPath -ProjectRoot $root
 
-$required = @('common.ps1', 'preflight.ps1', 'install.ps1', 'deploy.ps1', 'rollback.ps1', 'status.ps1', 'memory-guard.ps1', 'backup.ps1')
+$required = @('common.ps1', 'preflight-core.ps1', 'preflight.ps1', 'install-core.ps1', 'install.ps1', 'deploy.ps1', 'rollback.ps1', 'status.ps1', 'memory-guard-core.ps1', 'memory-guard.ps1', 'backup.ps1')
 $missing = @($required | Where-Object { -not (Test-Path -LiteralPath (Join-Path $deploymentRoot $_)) })
 if ($missing.Count) { throw "Missing generated files: $($missing -join ', ')" }
 

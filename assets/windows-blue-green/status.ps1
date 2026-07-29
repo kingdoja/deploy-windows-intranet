@@ -16,6 +16,8 @@ $result = [ordered]@{
   services = [ordered]@{}
   backupTask = $null
   latestMemoryEvent = $null
+  postCutoverWarning = $null
+  reconciliationWarning = $null
 }
 
 foreach ($slot in @('blue', 'green')) {
@@ -44,6 +46,13 @@ if ($task) {
 }
 $memoryLog = Join-Path $script:LogsRoot 'memory-guard.jsonl'
 if (Test-Path -LiteralPath $memoryLog) { $result.latestMemoryEvent = Get-Content -LiteralPath $memoryLog -Tail 1 }
+$cutoverWarning = Join-Path $script:StateRoot 'post-cutover-warning.json'
+if (Test-Path -LiteralPath $cutoverWarning) {
+  $result.postCutoverWarning = Get-Content -Raw -LiteralPath $cutoverWarning | ConvertFrom-Json
+}
+$reconciliationWarning = Join-Path $script:StateRoot 'reconciliation-warning.json'
+if (Test-Path -LiteralPath $reconciliationWarning) {
+  $result.reconciliationWarning = Get-Content -Raw -LiteralPath $reconciliationWarning | ConvertFrom-Json
+}
 
 $result | ConvertTo-Json -Depth 10
-

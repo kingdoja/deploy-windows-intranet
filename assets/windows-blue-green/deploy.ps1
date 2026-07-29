@@ -67,6 +67,7 @@ try {
 $oldSlot = Get-ActiveDeploymentSlot
 $newSlot = if ($oldSlot) { Get-OtherDeploymentSlot $oldSlot } else { 'blue' }
 $oldRelease = if ($oldSlot) { Get-SlotRelease $oldSlot } else { $null }
+$previousInactiveRelease = Get-SlotRelease $newSlot
 Write-Host "Starting release $releaseId in inactive slot $newSlot."
 Stop-DeploymentSlot $newSlot
 Set-SlotRelease $newSlot $releasePath
@@ -77,6 +78,7 @@ try {
   Publish-DeploymentCaddyConfiguration $newSlot
   Set-ActiveDeploymentState $newSlot $releasePath
 } catch {
+  $deploymentFailure = $_
   if ($oldSlot -and $oldRelease) {
     try {
       Publish-DeploymentWeb $oldRelease
@@ -84,11 +86,45 @@ try {
     } catch {
       Write-Warning "Automatic traffic restoration failed: $($_.Exception.Message)"
     }
+    try {
+      Set-ActiveDeploymentState $oldSlot $oldRelease
+    } catch {
+      Write-Warning "Automatic active-state restoration failed: $($_.Exception.Message)"
+    }
+  } else {
+    try { Clear-ActiveDeploymentState } catch { Write-Warning "Failed to clear partial active state: $($_.Exception.Message)" }
   }
-  Stop-DeploymentSlot $newSlot
-  throw
+  $newSlotStopped = $true
+  try {
+    Stop-DeploymentSlot $newSlot
+  } catch {
+    $newSlotStopped = $false
+    Write-Warning "Failed to stop the rejected slot $newSlot`: $($_.Exception.Message)"
+  }
+  if ($newSlotStopped) {
+    try {
+      Restore-SlotRelease $newSlot $previousInactiveRelease
+    } catch {
+      Write-Warning "Failed to restore the previous rollback slot $newSlot`: $($_.Exception.Message)"
+    }
+  } else {
+    Write-Warning "The previous rollback junction was not restored because slot $newSlot is still running."
+  }
+  throw $deploymentFailure
 }
 
-if ($oldSlot) { Stop-DeploymentSlot $oldSlot }
+Clear-PostCutoverWarning
+$completionStatus = 'switched'
+if ($oldSlot) {
+  try {
+    Stop-DeploymentSlot $oldSlot
+  } catch {
+    $completionStatus = 'switched-with-drain-warning'
+    $message = "Traffic switched to $newSlot, but old slot $oldSlot did not drain: $($_.Exception.Message)"
+    Set-PostCutoverWarning 'deploy' $oldSlot $message
+    Write-Warning $message
+  }
+}
 Write-Output "Release completed: $releaseId"
 Write-Output "Active slot: $newSlot"
+Write-Output "Completion status: $completionStatus"

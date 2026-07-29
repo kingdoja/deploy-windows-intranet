@@ -12,6 +12,7 @@ $ErrorActionPreference = 'Stop'
 
 & (Join-Path $PSScriptRoot 'preflight.ps1') -ConfigPath $ConfigPath -ProjectRoot $SourceRoot
 . (Join-Path $PSScriptRoot 'common.ps1') -ConfigPath $ConfigPath
+. (Join-Path $PSScriptRoot 'install-core.ps1')
 Assert-DeploymentAdministrator
 Initialize-DeploymentDirectories
 
@@ -176,6 +177,98 @@ function Install-InfrastructureServices {
   }
 }
 
+function Get-ExpectedManagedServiceIds {
+  $ids = [Collections.Generic.List[string]]::new()
+  foreach ($slot in @('blue', 'green')) {
+    foreach ($service in @($script:DeploymentConfig.services)) {
+      $ids.Add((Get-DeploymentServiceName $service $slot))
+    }
+  }
+  $ids.Add((Get-CaddyServiceName))
+  if ($script:DeploymentConfig.memoryGuard.enabled) { $ids.Add((Get-MemoryGuardServiceName)) }
+  return @($ids | Sort-Object -Unique)
+}
+
+function Get-PreviouslyManagedServiceIds {
+  $ids = [Collections.Generic.List[string]]::new()
+  $manifestPath = Join-Path $script:StateRoot 'managed-services.json'
+  if (Test-Path -LiteralPath $manifestPath) {
+    $manifest = $null
+    try {
+      $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    } catch {
+      Write-Warning "Managed-service manifest could not be read; service XML files will be used: $($_.Exception.Message)"
+    }
+    if ($manifest) {
+      if ($manifest.PSObject.Properties.Name -contains 'servicePrefix' -and [string]$manifest.servicePrefix -ne [string]$script:DeploymentConfig.servicePrefix) {
+        throw "servicePrefix cannot change after installation. Existing=$($manifest.servicePrefix) Configured=$($script:DeploymentConfig.servicePrefix)"
+      }
+      foreach ($id in @($manifest.serviceIds)) { $ids.Add([string]$id) }
+    }
+  }
+  foreach ($xmlPath in Get-ChildItem -LiteralPath $script:ServiceRoot -Filter '*.xml' -File -ErrorAction SilentlyContinue) {
+    try {
+      [xml]$xml = Get-Content -Raw -LiteralPath $xmlPath.FullName
+      $id = [string]$xml.service.id
+      if ($id -match "^$([regex]::Escape([string]$script:DeploymentConfig.servicePrefix))[A-Za-z0-9]+$") { $ids.Add($id) }
+    } catch {
+      Write-Warning "Ignoring unreadable service XML $($xmlPath.FullName): $($_.Exception.Message)"
+    }
+  }
+  return @($ids | Sort-Object -Unique)
+}
+
+function Set-ManagedServiceManifest([string[]]$ServiceIds) {
+  $manifest = [ordered]@{
+    servicePrefix = [string]$script:DeploymentConfig.servicePrefix
+    serviceIds = @($ServiceIds | Sort-Object -Unique)
+    updatedAt = (Get-Date).ToString('o')
+  } | ConvertTo-Json
+  Set-DeploymentAtomicText (Join-Path $script:StateRoot 'managed-services.json') "$manifest`n"
+}
+
+function Sync-ObsoleteDeploymentServices([string[]]$PreviousIds, [string[]]$ExpectedIds) {
+  $obsolete = @(Get-ObsoleteManagedServiceIds $PreviousIds $ExpectedIds)
+  $failed = [Collections.Generic.List[string]]::new()
+
+  foreach ($id in $obsolete) {
+    try {
+      if ($id -notmatch "^$([regex]::Escape([string]$script:DeploymentConfig.servicePrefix))[A-Za-z0-9]+$") {
+        throw "Refusing to reconcile an unexpected service ID: $id"
+      }
+      $service = Get-Service -Name $id -ErrorAction SilentlyContinue
+      if ($service) {
+        Set-Service -Name $id -StartupType Manual
+        if ($service.Status -ne 'Stopped') {
+          Stop-Service -Name $id
+          (Get-Service -Name $id).WaitForStatus('Stopped', [TimeSpan]::FromMinutes(5))
+        }
+      }
+      $serviceExe = Join-Path $script:ServiceRoot "$id.exe"
+      if ((Get-Service -Name $id -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath $serviceExe)) {
+        & $serviceExe uninstall
+        if ($LASTEXITCODE -ne 0) { throw "WinSW failed to uninstall service $id." }
+      }
+      if (Get-Service -Name $id -ErrorAction SilentlyContinue) { throw "Service still exists after uninstall: $id" }
+      foreach ($path in @($serviceExe, (Join-Path $script:ServiceRoot "$id.xml"))) {
+        if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+      }
+    } catch {
+      $failed.Add($id)
+      Write-Warning "Obsolete service $id could not be reconciled: $($_.Exception.Message)"
+    }
+  }
+
+  $warningPath = Join-Path $script:StateRoot 'reconciliation-warning.json'
+  if ($failed.Count) {
+    $warning = [ordered]@{ failedServiceIds = @($failed); recordedAt = (Get-Date).ToString('o') } | ConvertTo-Json
+    Set-DeploymentAtomicText $warningPath "$warning`n"
+  } elseif (Test-Path -LiteralPath $warningPath) {
+    Remove-Item -LiteralPath $warningPath -Force
+  }
+  Set-ManagedServiceManifest (@($ExpectedIds) + @($failed))
+}
+
 function Install-HostSettings {
   $firewallName = "$($script:DeploymentConfig.servicePrefix) Intranet HTTP"
   Get-NetFirewallRule -DisplayName $firewallName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
@@ -185,17 +278,25 @@ function Install-HostSettings {
   if ($script:DeploymentConfig.power.disableAcHibernate) { & powercfg.exe /change hibernate-timeout-ac 0 | Out-Null }
 }
 
-function Install-BackupTask {
-  if (-not $script:DeploymentConfig.backup.enabled) { return }
+function Sync-BackupTask {
+  $taskName = Get-BackupTaskName
+  if (-not $script:DeploymentConfig.backup.enabled) {
+    if (Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue) {
+      Unregister-ScheduledTask -TaskName $taskName -Confirm:$false
+    }
+    return
+  }
   $productionConfig = Join-Path $script:ServiceRoot 'deployment.config.json'
   $backupScript = Join-Path $script:ServiceRoot 'backup.ps1'
   $taskCommand = "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$backupScript`" -ConfigPath `"$productionConfig`""
-  & schtasks.exe /Create /F /SC DAILY /ST ([string]$script:DeploymentConfig.backup.schedule) /TN (Get-BackupTaskName) /TR $taskCommand /RU SYSTEM | Out-Null
+  & schtasks.exe /Create /F /SC DAILY /ST ([string]$script:DeploymentConfig.backup.schedule) /TN $taskName /TR $taskCommand /RU SYSTEM | Out-Null
   if ($LASTEXITCODE -ne 0) { throw 'Failed to create the scheduled backup task.' }
 }
 
+$previousManagedServiceIds = @(Get-PreviouslyManagedServiceIds)
+$expectedManagedServiceIds = @(Get-ExpectedManagedServiceIds)
 Install-DeploymentTools
-foreach ($file in @('common.ps1', 'memory-guard.ps1', 'backup.ps1')) {
+foreach ($file in @('common.ps1', 'memory-guard-core.ps1', 'memory-guard.ps1', 'backup.ps1')) {
   Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $script:ServiceRoot $file) -Force
 }
 Copy-Item -LiteralPath $ConfigPath -Destination (Join-Path $script:ServiceRoot 'deployment.config.json') -Force
@@ -205,13 +306,16 @@ Install-HostSettings
 
 if (-not $SkipInitialDeploy) {
   & (Join-Path $PSScriptRoot 'deploy.ps1') -ConfigPath $ConfigPath -SourceRoot $SourceRoot -SkipTests:$SkipTests -AllowDirty:$AllowDirty
+  Sync-ObsoleteDeploymentServices $previousManagedServiceIds $expectedManagedServiceIds
+  Sync-BackupTask
+} else {
+  Write-Warning 'Initial deployment was skipped; obsolete services and backup task state were not reconciled.'
 }
 
-Install-BackupTask
 if ($script:DeploymentConfig.memoryGuard.enabled) {
   $guardName = Get-MemoryGuardServiceName
   Set-Service -Name $guardName -StartupType Automatic
-  if ((Get-Service -Name $guardName).Status -ne 'Running') { Start-Service -Name $guardName }
+  if ((Get-Service -Name $guardName).Status -eq 'Running') { Restart-Service -Name $guardName -Force } else { Start-Service -Name $guardName }
 }
 
 Write-Output "Installation completed for $($script:DeploymentConfig.appName)."

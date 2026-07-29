@@ -26,7 +26,7 @@ This is single-host resilience against failed releases and process crashes. It d
 - Reserve the server IP through DHCP and configure internal DNS.
 - Approve the firewall CIDR and, when available, issue an internal TLS certificate.
 - Install supported Node.js and npm versions system-wide.
-- Keep secrets in machine-level environment variables; do not put secret values in `deployment.config.json`.
+- Keep secrets in system-level environment variables available to `LocalSystem`; reference them as `%VARIABLE_NAME%` and do not put secret values in `deployment.config.json`.
 - Confirm API readiness endpoints, worker graceful shutdown, persistent storage, and backward-compatible database migrations.
 - Define an application-consistent backup and isolated restore procedure.
 
@@ -60,12 +60,17 @@ Commit the intended source changes, then run from elevated PowerShell:
 
 Do not use `-SkipTests` or `-AllowDirty` in normal operation. Record the reason and approver whenever an emergency release uses either switch.
 
+When adding, removing, or renaming a service, changing service environment, toggling Memory Guard, or changing the backup task, run `install.ps1` instead of `deploy.ps1`. Installation deploys the new slot first, then reconciles obsolete services and tasks.
+
 Post-release checks:
 
 - Stable page and APIs respond from a second intranet computer.
 - The reported active release matches the expected Git commit.
 - New workers accept work and old workers are stopped.
 - Error logs and memory-guard events remain normal.
+- `postCutoverWarning` and `reconciliationWarning` are both null in `status.ps1` output.
+
+`Completion status: switched-with-drain-warning` means traffic is already on the new version but the old slot is still running. Do not rerun deployment blindly; inspect `status.ps1`, stop the recorded old services, and clear the incident only after verifying they are stopped.
 
 ## Rollback
 

@@ -11,6 +11,7 @@
 - Internal IP reservation, DNS, firewall CIDR, and service ownership are agreed with IT.
 - Backup is application-consistent and has an off-host destination, or the missing control is explicitly accepted.
 - `preflight.ps1` reports no blocking errors.
+- Every occupied configured port is owned by the expected WinSW service process tree; a production directory alone is not sufficient.
 
 ## First Installation
 
@@ -29,6 +30,10 @@
 - Old workers drain or safely release work before their timeout.
 - Rollback restores the previous frontend and APIs without changing persistent data.
 - A forced inactive-slot API crash is automatically recovered without affecting the stable URL.
+- A failed candidate release restores the previous inactive-slot release and remains immediately rollback-capable.
+- Removing or renaming a configured service through `install.ps1` stops and uninstalls the obsolete service after cutover.
+- Memory Guard process-tree accounting is covered by `scripts/test-skill.ps1` and produces no `$PID` automatic-variable errors.
+- `status.ps1` reports no unresolved post-cutover or reconciliation warning.
 
 ## Backup and Recovery
 
@@ -43,4 +48,3 @@
 - The generated Runbook contains real URLs, paths, commands, owners, maintenance windows, backup destination, and escalation contacts.
 - Operators can run status, deploy, rollback, backup, and restore without Codex.
 - Known single-host risks and postponed controls are recorded.
-

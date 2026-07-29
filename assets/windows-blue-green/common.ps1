@@ -43,7 +43,7 @@ function Invoke-DeploymentCommand($Command, [string]$WorkingDirectory) {
   Push-Location $WorkingDirectory
   try {
     & $executable @arguments
-    if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE`: $executable $($arguments -join ' ')" }
+    if ($LASTEXITCODE -ne 0) { throw "Command failed with exit code $LASTEXITCODE`: $executable" }
   } finally {
     Pop-Location
   }
@@ -109,17 +109,67 @@ function Set-SlotRelease([string]$Slot, [string]$ReleasePath) {
     throw "Release must be inside $script:ReleasesRoot"
   }
   $current = Get-SlotCurrentPath $Slot
-  if (Test-Path -LiteralPath $current) { Remove-Item -LiteralPath $current -Force }
-  New-Item -ItemType Junction -Path $current -Target $resolvedRelease | Out-Null
+  $next = "$current.$PID.next"
+  $previous = "$current.$PID.previous"
+  foreach ($temporary in @($next, $previous)) {
+    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+  }
+  New-Item -ItemType Junction -Path $next -Target $resolvedRelease | Out-Null
+  $hadCurrent = Test-Path -LiteralPath $current
+  try {
+    if ($hadCurrent) { Move-Item -LiteralPath $current -Destination $previous }
+    Move-Item -LiteralPath $next -Destination $current
+    if ($hadCurrent -and (Test-Path -LiteralPath $previous)) { Remove-Item -LiteralPath $previous -Force }
+  } catch {
+    if ((-not (Test-Path -LiteralPath $current)) -and (Test-Path -LiteralPath $previous)) {
+      Move-Item -LiteralPath $previous -Destination $current
+    }
+    if (Test-Path -LiteralPath $next) { Remove-Item -LiteralPath $next -Force }
+    throw
+  }
+}
+
+function Clear-SlotRelease([string]$Slot) {
+  $current = Get-SlotCurrentPath $Slot
+  if (-not (Test-Path -LiteralPath $current)) { return }
+  $item = Get-Item -LiteralPath $current -Force
+  if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw "Refusing to remove a slot path that is not a junction: $current"
+  }
+  Remove-Item -LiteralPath $current -Force
+}
+
+function Restore-SlotRelease([string]$Slot, [string]$ReleasePath) {
+  if ($ReleasePath) { Set-SlotRelease $Slot $ReleasePath } else { Clear-SlotRelease $Slot }
 }
 
 function Expand-DeploymentValue([string]$Value, $Service, [string]$Slot, [string]$ReleasePath) {
   $port = if ($Service -and [string]$Service.type -eq 'api') { [string](Get-DeploymentPort $Service $Slot) } else { '' }
-  $expanded = [Environment]::ExpandEnvironmentVariables($Value)
+  $expanded = $Value
   $expanded = $expanded.Replace('{ProductionRoot}', $script:ProductionRoot)
   $expanded = $expanded.Replace('{Slot}', $Slot)
   $expanded = $expanded.Replace('{Port}', $port)
   return $expanded.Replace('{ReleasePath}', $ReleasePath)
+}
+
+function Resolve-DeploymentProcessValue([string]$Value, $Service, [string]$Slot, [string]$ReleasePath) {
+  $tokenExpanded = Expand-DeploymentValue $Value $Service $Slot $ReleasePath
+  return [Environment]::ExpandEnvironmentVariables($tokenExpanded)
+}
+
+function Set-PostCutoverWarning([string]$Operation, [string]$Slot, [string]$Message) {
+  $warning = [ordered]@{
+    operation = $Operation
+    slot = $Slot
+    message = $Message
+    recordedAt = (Get-Date).ToString('o')
+  } | ConvertTo-Json
+  Set-DeploymentAtomicText (Join-Path $script:StateRoot 'post-cutover-warning.json') "$warning`n"
+}
+
+function Clear-PostCutoverWarning {
+  $path = Join-Path $script:StateRoot 'post-cutover-warning.json'
+  if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
 }
 
 function Wait-DeploymentHealth($Service, [string]$Slot, [int]$TimeoutSeconds = 90) {
@@ -175,7 +225,8 @@ function Stop-DeploymentSlot([string]$Slot) {
   $stoppedSince = $null
   while ((Get-Date) -lt $deadline) {
     $running = @($services | Where-Object {
-      (Get-Service -Name (Get-DeploymentServiceName $_ $Slot) -ErrorAction SilentlyContinue).Status -ne 'Stopped'
+      $candidate = Get-Service -Name (Get-DeploymentServiceName $_ $Slot) -ErrorAction SilentlyContinue
+      $candidate -and $candidate.Status -ne 'Stopped'
     })
     if (-not $running.Count) {
       if (-not $stoppedSince) { $stoppedSince = Get-Date }
@@ -186,7 +237,10 @@ function Stop-DeploymentSlot([string]$Slot) {
     }
     Start-Sleep -Seconds 2
   }
-  $names = @($services | Where-Object { (Get-Service -Name (Get-DeploymentServiceName $_ $Slot)).Status -ne 'Stopped' } | ForEach-Object { Get-DeploymentServiceName $_ $Slot })
+  $names = @($services | Where-Object {
+    $candidate = Get-Service -Name (Get-DeploymentServiceName $_ $Slot) -ErrorAction SilentlyContinue
+    $candidate -and $candidate.Status -ne 'Stopped'
+  } | ForEach-Object { Get-DeploymentServiceName $_ $Slot })
   throw "Services did not stop in time: $($names -join ', ')"
 }
 
@@ -252,4 +306,10 @@ function Set-ActiveDeploymentState([string]$Slot, [string]$ReleasePath) {
   Set-DeploymentAtomicText (Join-Path $script:StateRoot 'active-slot.txt') "$Slot`n"
   $state = [ordered]@{ slot = $Slot; releasePath = $ReleasePath; switchedAt = (Get-Date).ToString('o') } | ConvertTo-Json
   Set-DeploymentAtomicText (Join-Path $script:StateRoot 'active-release.json') "$state`n"
+}
+
+function Clear-ActiveDeploymentState {
+  foreach ($path in @((Join-Path $script:StateRoot 'active-slot.txt'), (Join-Path $script:StateRoot 'active-release.json'))) {
+    if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Force }
+  }
 }

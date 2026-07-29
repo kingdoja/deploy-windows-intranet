@@ -39,7 +39,9 @@ Do not present this as machine-level high availability. One host still has power
 - Keep application data, logs, secrets, tools, releases, and active-slot state outside the source checkout.
 - Run tests and build before creating a release directory.
 - Start the inactive slot, wait for every API health endpoint, switch Caddy atomically, then drain the old slot.
-- Preserve the active slot on any pre-switch failure.
+- Preserve both the active slot and the previous rollback target on any pre-switch failure.
+- Treat `switched-with-drain-warning`, `postCutoverWarning`, and `reconciliationWarning` as incidents requiring operator action even though traffic already switched.
+- Run `scripts/test-skill.ps1` after changing this Skill or its generated PowerShell assets.
 - Require expand/contract database migrations across at least the current and previous application versions.
 - Treat `-SkipTests`, disabled backups, broad firewall ranges, dirty releases, and missing restore drills as explicit risks, never invisible defaults.
 - Never install from placeholder service entries. Validate every configured entry point and build artifact first.
@@ -49,7 +51,7 @@ Do not present this as machine-level high availability. One host still has power
 - `scripts/audit-project.ps1`: inspect a project without modifying it.
 - `scripts/scaffold-project.ps1`: copy the project-owned deployment template and Runbook.
 - `scripts/validate-project.ps1`: validate configuration, referenced files, and the generated package.
+- `scripts/test-skill.ps1`: run isolated regression tests without installing services or changing host settings.
 - `assets/windows-blue-green/`: files copied into the target project.
 - [references/deployment-contract.md](references/deployment-contract.md): configuration schema and application contracts.
 - [references/acceptance-checklist.md](references/acceptance-checklist.md): installation and release acceptance gates.
-

@@ -26,10 +26,25 @@ try {
     } catch {
       Write-Warning "Automatic traffic restoration failed: $($_.Exception.Message)"
     }
+    try {
+      Set-ActiveDeploymentState $currentSlot $currentRelease
+    } catch {
+      Write-Warning "Automatic active-state restoration failed: $($_.Exception.Message)"
+    }
   }
   Stop-DeploymentSlot $targetSlot
   throw
 }
-Stop-DeploymentSlot $currentSlot
+Clear-PostCutoverWarning
+$completionStatus = 'switched'
+try {
+  Stop-DeploymentSlot $currentSlot
+} catch {
+  $completionStatus = 'switched-with-drain-warning'
+  $message = "Rollback switched to $targetSlot, but previous slot $currentSlot did not drain: $($_.Exception.Message)"
+  Set-PostCutoverWarning 'rollback' $currentSlot $message
+  Write-Warning $message
+}
 Write-Output "Rolled back to: $targetRelease"
 Write-Output "Active slot: $targetSlot"
+Write-Output "Completion status: $completionStatus"

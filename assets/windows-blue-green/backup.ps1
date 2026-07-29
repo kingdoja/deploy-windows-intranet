@@ -14,14 +14,13 @@ if ([string]$script:DeploymentConfig.productionRootEnvironment) {
   [Environment]::SetEnvironmentVariable([string]$script:DeploymentConfig.productionRootEnvironment, $script:ProductionRoot, 'Process')
 }
 foreach ($property in $script:DeploymentConfig.commonEnvironment.PSObject.Properties) {
-  $value = Expand-DeploymentValue ([string]$property.Value) $null $slot $release
+  $value = Resolve-DeploymentProcessValue ([string]$property.Value) $null $slot $release
   [Environment]::SetEnvironmentVariable($property.Name, $value, 'Process')
 }
 
 $command = [pscustomobject]@{
-  executable = Expand-DeploymentValue ([string]$script:DeploymentConfig.backup.command.executable) $null $slot $release
-  arguments = @($script:DeploymentConfig.backup.command.arguments | ForEach-Object { Expand-DeploymentValue ([string]$_) $null $slot $release })
+  executable = Resolve-DeploymentProcessValue ([string]$script:DeploymentConfig.backup.command.executable) $null $slot $release
+  arguments = @($script:DeploymentConfig.backup.command.arguments | ForEach-Object { Resolve-DeploymentProcessValue ([string]$_) $null $slot $release })
 }
 Invoke-DeploymentCommand $command $release
 Write-Output "Backup command completed for release: $release"
-

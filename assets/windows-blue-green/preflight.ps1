@@ -9,6 +9,7 @@ $ErrorActionPreference = 'Stop'
 
 & (Join-Path $PSScriptRoot 'validate-config.ps1') -ConfigPath $ConfigPath -ProjectRoot $ProjectRoot
 . (Join-Path $PSScriptRoot 'common.ps1') -ConfigPath $ConfigPath
+. (Join-Path $PSScriptRoot 'preflight-core.ps1')
 
 $checks = [Collections.Generic.List[object]]::new()
 function Add-Check([string]$Name, [bool]$Passed, [string]$Detail, [bool]$Blocking = $true) {
@@ -29,19 +30,46 @@ foreach ($command in @('node.exe', 'npm.cmd', 'curl.exe')) {
   Add-Check "command-$command" ([bool]$found) $detail
 }
 
+$referencedMachineVariables = @{}
+foreach ($environment in @($script:DeploymentConfig.commonEnvironment) + @($script:DeploymentConfig.services | ForEach-Object { $_.environment })) {
+  if (-not $environment) { continue }
+  foreach ($property in $environment.PSObject.Properties) {
+    if ([string]$property.Value -match '^%([A-Za-z_][A-Za-z0-9_]*)%$') {
+      $referencedMachineVariables[$Matches[1].ToUpperInvariant()] = $Matches[1]
+    }
+  }
+}
+foreach ($variableName in $referencedMachineVariables.Values) {
+  $defined = $null -ne [Environment]::GetEnvironmentVariable($variableName, 'Machine')
+  Add-Check "machine-environment-$variableName" $defined 'Referenced service variables must exist at machine scope for LocalSystem.'
+}
+
 $placeholderOrigin = @($script:DeploymentConfig.publicOrigins | Where-Object { $_ -match '10\.0\.0\.10' }).Count -gt 0
 Add-Check 'public-origins-customized' (-not $placeholderOrigin) 'Replace the template origin with the real IP or internal DNS name.'
 
-$configuredPorts = @([int]$script:DeploymentConfig.listenPort)
+$portExpectations = [Collections.Generic.List[object]]::new()
+$portExpectations.Add([pscustomobject]@{ port = [int]$script:DeploymentConfig.listenPort; serviceName = Get-CaddyServiceName })
 foreach ($service in @($script:DeploymentConfig.services | Where-Object { $_.type -eq 'api' })) {
-  $configuredPorts += [int]$service.bluePort
-  $configuredPorts += [int]$service.greenPort
+  foreach ($slot in @('blue', 'green')) {
+    $portExpectations.Add([pscustomobject]@{ port = Get-DeploymentPort $service $slot; serviceName = Get-DeploymentServiceName $service $slot })
+  }
 }
-foreach ($port in $configuredPorts) {
+$processes = @(Get-CimInstance Win32_Process)
+foreach ($expectation in $portExpectations) {
+  $port = [int]$expectation.port
   $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
-  $knownInstall = Test-Path -LiteralPath $script:ProductionRoot
-  $detail = if ($listeners.Count) { "Currently listened to by PID(s): $(@($listeners.OwningProcess) -join ', ')" } else { 'Available.' }
-  Add-Check "port-$port" (-not $listeners.Count -or $knownInstall) $detail
+  if (-not $listeners.Count) {
+    Add-Check "port-$port" $true 'Available.'
+    continue
+  }
+  $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$($expectation.serviceName)'" -ErrorAction SilentlyContinue
+  $owned = $serviceInfo -and (Test-ListenerProcessOwnership @($listeners.OwningProcess) ([int]$serviceInfo.ProcessId) $processes)
+  $detail = if ($owned) {
+    "Owned by expected service $($expectation.serviceName); listener PID(s): $(@($listeners.OwningProcess) -join ', ')"
+  } else {
+    "Unexpected listener PID(s): $(@($listeners.OwningProcess) -join ', '); expected service: $($expectation.serviceName)"
+  }
+  Add-Check "port-$port" ([bool]$owned) $detail
 }
 
 $drive = [IO.Path]::GetPathRoot($script:ProductionRoot)

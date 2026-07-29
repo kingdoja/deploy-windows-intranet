@@ -78,6 +78,14 @@ Worker objects omit ports, health paths, and routes. Give every service a unique
 
 Available string tokens in environment values are `{ProductionRoot}`, `{Slot}`, `{Port}`, and `{ReleasePath}`. Reference machine-level secret variables as `%VARIABLE_NAME%`; do not store their values in JSON.
 
+Keep `servicePrefix` stable after first installation. Define secret references as system-level environment variables because services and scheduled backups run as `LocalSystem`. The installer preserves `%VARIABLE_NAME%` in WinSW XML instead of resolving it to plaintext during installation.
+
+## Configuration Reconciliation
+
+Run `install.ps1` after adding, removing, or renaming services, changing service environment, toggling Memory Guard, or changing backup task configuration. After the new slot has switched successfully, installation disables, stops, and uninstalls services no longer present in configuration. It also removes a disabled backup task. Failed cleanup is recorded as `state/reconciliation-warning.json` and remains visible in `status.ps1`.
+
+Normal code-only releases may use `deploy.ps1`. A failed pre-switch release restores the previous inactive-slot junction so the last reliable rollback target remains available. After traffic switches, an old-slot stop failure produces `switched-with-drain-warning` and `state/post-cutover-warning.json`; it does not claim that the cutover itself failed.
+
 ## Project-Specific Adaptation
 
 Inspect and customize these areas for every project:
@@ -93,4 +101,3 @@ Inspect and customize these areas for every project:
 - Internal DNS, certificate, firewall CIDR, DHCP reservation, and service owner
 
 Do not add platform variants to this configuration. Create separate templates or Skills for Linux, Docker, Kubernetes, IIS, Java services, or Python services.
-

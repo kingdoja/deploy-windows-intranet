@@ -19,6 +19,11 @@ function Test-SafeRelativePath([string]$Value) {
   if (-not $Value -or [IO.Path]::IsPathRooted($Value)) { return $false }
   return -not (@($Value -split '[\\/]' | Where-Object { $_ -eq '..' }).Count)
 }
+function Get-NormalizedServiceToken([string]$Name) {
+  return -join ($Name -split '-' | ForEach-Object {
+    if ($_.Length -eq 1) { $_.ToUpperInvariant() } else { $_.Substring(0, 1).ToUpperInvariant() + $_.Substring(1) }
+  })
+}
 function Test-CommandObject($Command, [string]$Name) {
   if (-not $Command -or -not (Has-Property $Command 'executable') -or -not [string]$Command.executable) {
     Add-ConfigError "$Name.executable is required."
@@ -102,12 +107,22 @@ if ($config.staticSite.enabled) {
 Test-EnvironmentObject $config.commonEnvironment 'commonEnvironment'
 if (-not @($config.services).Count) { Add-ConfigError 'At least one service is required.' }
 $serviceNames = @{}
+$generatedServiceIds = @{}
 $ports = @{}
 $apiCount = 0
 foreach ($service in @($config.services)) {
   $name = [string]$service.name
   if ($name -notmatch '^[a-z][a-z0-9-]{0,30}$') { Add-ConfigError "Invalid service name: $name" }
   if ($serviceNames.ContainsKey($name)) { Add-ConfigError "Duplicate service name: $name" } else { $serviceNames[$name] = $true }
+  foreach ($slot in @('Blue', 'Green')) {
+    $generatedId = "$($config.servicePrefix)$(Get-NormalizedServiceToken $name)$slot"
+    $collisionKey = $generatedId.ToLowerInvariant()
+    if ($generatedServiceIds.ContainsKey($collisionKey)) {
+      Add-ConfigError "Service name $name collides with $($generatedServiceIds[$collisionKey]) after Windows service ID normalization: $generatedId"
+    } else {
+      $generatedServiceIds[$collisionKey] = $name
+    }
+  }
   if ([string]$service.type -notin @('api', 'worker')) { Add-ConfigError "Service $name type must be api or worker." }
   if (-not (Test-SafeRelativePath ([string]$service.entry))) { Add-ConfigError "Service $name has an unsafe entry path." }
   elseif (-not (Test-Path -LiteralPath (Join-Path $ProjectRoot $service.entry))) { Add-ConfigError "Service entry does not exist: $($service.entry)" }
