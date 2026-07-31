@@ -4,7 +4,9 @@ param([string]$ConfigPath = (Join-Path $PSScriptRoot 'deployment.config.json'))
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'common.ps1') -ConfigPath $ConfigPath
-Assert-DeploymentAdministrator
+$operationLock = Enter-DeploymentOperationLock
+try {
+  Assert-DeploymentAdministrator
 
 $currentSlot = Get-ActiveDeploymentSlot
 if (-not $currentSlot) { throw 'No active slot is recorded.' }
@@ -15,13 +17,11 @@ if (-not $targetRelease) { throw "No rollback release is attached to slot $targe
 
 Start-DeploymentSlot $targetSlot
 try {
-  Publish-DeploymentWeb $targetRelease
   Publish-DeploymentCaddyConfiguration $targetSlot
   Set-ActiveDeploymentState $targetSlot $targetRelease
 } catch {
   if ($currentRelease) {
     try {
-      Publish-DeploymentWeb $currentRelease
       Publish-DeploymentCaddyConfiguration $currentSlot
     } catch {
       Write-Warning "Automatic traffic restoration failed: $($_.Exception.Message)"
@@ -48,3 +48,6 @@ try {
 Write-Output "Rolled back to: $targetRelease"
 Write-Output "Active slot: $targetSlot"
 Write-Output "Completion status: $completionStatus"
+} finally {
+  Exit-DeploymentOperationLock $operationLock
+}

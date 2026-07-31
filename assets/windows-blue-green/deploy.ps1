@@ -11,8 +11,10 @@ $ErrorActionPreference = 'Stop'
 
 & (Join-Path $PSScriptRoot 'validate-config.ps1') -ConfigPath $ConfigPath -ProjectRoot $SourceRoot
 . (Join-Path $PSScriptRoot 'common.ps1') -ConfigPath $ConfigPath
-Assert-DeploymentAdministrator
-Initialize-DeploymentDirectories
+$operationLock = Enter-DeploymentOperationLock
+try {
+  Assert-DeploymentAdministrator
+  Initialize-DeploymentDirectories
 
 $SourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $git = Get-Command git.exe -ErrorAction SilentlyContinue
@@ -46,7 +48,9 @@ try {
     Copy-Item -LiteralPath (Join-Path $SourceRoot $directory) -Destination $releasePath -Recurse -Force
   }
   foreach ($file in @($script:DeploymentConfig.release.includeFiles)) {
-    Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination (Join-Path $releasePath $file) -Force
+    $destination = Join-Path $releasePath $file
+    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination $destination -Force
   }
   Invoke-DeploymentCommand $script:DeploymentConfig.release.installCommand $releasePath
 
@@ -74,14 +78,12 @@ Set-SlotRelease $newSlot $releasePath
 
 try {
   Start-DeploymentSlot $newSlot
-  Publish-DeploymentWeb $releasePath
   Publish-DeploymentCaddyConfiguration $newSlot
   Set-ActiveDeploymentState $newSlot $releasePath
 } catch {
   $deploymentFailure = $_
   if ($oldSlot -and $oldRelease) {
     try {
-      Publish-DeploymentWeb $oldRelease
       Publish-DeploymentCaddyConfiguration $oldSlot
     } catch {
       Write-Warning "Automatic traffic restoration failed: $($_.Exception.Message)"
@@ -128,3 +130,6 @@ if ($oldSlot) {
 Write-Output "Release completed: $releaseId"
 Write-Output "Active slot: $newSlot"
 Write-Output "Completion status: $completionStatus"
+} finally {
+  Exit-DeploymentOperationLock $operationLock
+}

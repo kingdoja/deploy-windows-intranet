@@ -19,6 +19,26 @@ function Test-SafeRelativePath([string]$Value) {
   if (-not $Value -or [IO.Path]::IsPathRooted($Value)) { return $false }
   return -not (@($Value -split '[\\/]' | Where-Object { $_ -eq '..' }).Count)
 }
+function Test-PathWithin([string]$Candidate, [string]$Parent) {
+  $candidateFull = [IO.Path]::GetFullPath($Candidate).TrimEnd('\')
+  $parentFull = [IO.Path]::GetFullPath($Parent).TrimEnd('\')
+  return $candidateFull.Equals($parentFull, [StringComparison]::OrdinalIgnoreCase) -or
+    $candidateFull.StartsWith("$parentFull\", [StringComparison]::OrdinalIgnoreCase)
+}
+function Test-ApprovedFirewallRemoteAddress([string]$Value) {
+  if ($Value -eq 'LocalSubnet') { return $true }
+  if ($Value -in @('Any', '*', '0.0.0.0/0', '::/0')) { return $false }
+  $address = $null
+  if ([Net.IPAddress]::TryParse($Value, [ref]$address)) {
+    return -not $address.Equals([Net.IPAddress]::Any) -and -not $address.Equals([Net.IPAddress]::IPv6Any)
+  }
+  if ($Value -notmatch '^(.+)/(\d{1,3})$') { return $false }
+  $network = $null
+  if (-not [Net.IPAddress]::TryParse($Matches[1], [ref]$network)) { return $false }
+  $maxPrefix = if ($network.AddressFamily -eq [Net.Sockets.AddressFamily]::InterNetwork) { 32 } else { 128 }
+  $prefix = [int]$Matches[2]
+  return $prefix -gt 0 -and $prefix -le $maxPrefix
+}
 function Get-NormalizedServiceToken([string]$Name) {
   return -join ($Name -split '-' | ForEach-Object {
     if ($_.Length -eq 1) { $_.ToUpperInvariant() } else { $_.Substring(0, 1).ToUpperInvariant() + $_.Substring(1) }
@@ -58,7 +78,7 @@ try {
   throw "Invalid JSON in $ConfigPath`: $($_.Exception.Message)"
 }
 
-if (-not (Has-Property $config 'schemaVersion') -or $config.schemaVersion -ne 1) { Add-ConfigError 'schemaVersion must be 1.' }
+if (-not (Has-Property $config 'schemaVersion') -or $config.schemaVersion -ne 2) { Add-ConfigError 'schemaVersion must be 2. Migrate older configs by adding bindAddressEnvironment to every API.' }
 if (-not [string]$config.appName) { Add-ConfigError 'appName is required.' }
 if ([string]$config.servicePrefix -notmatch '^[A-Za-z][A-Za-z0-9]{1,39}$') { Add-ConfigError 'servicePrefix must be 2-40 ASCII letters or digits and start with a letter.' }
 
@@ -68,8 +88,15 @@ if (-not [IO.Path]::IsPathRooted([string]$config.productionRoot)) {
   $fullProductionRoot = [IO.Path]::GetFullPath([string]$config.productionRoot).TrimEnd('\')
   $driveRoot = [IO.Path]::GetPathRoot($fullProductionRoot).TrimEnd('\')
   if ($fullProductionRoot -eq $driveRoot) { Add-ConfigError 'productionRoot cannot be a drive root.' }
-  if ($fullProductionRoot.StartsWith($ProjectRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+  if ((Split-Path -Leaf $fullProductionRoot) -ne [string]$config.servicePrefix) {
+    Add-ConfigError 'productionRoot must end with servicePrefix so the directory is application-owned.'
+  }
+  if (Test-PathWithin $fullProductionRoot $ProjectRoot) {
     Add-ConfigError 'productionRoot must be outside the source checkout.'
+  }
+  $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+  if ($userProfile -and (Test-PathWithin $fullProductionRoot $userProfile)) {
+    Add-ConfigError 'productionRoot cannot be inside a user profile.'
   }
 }
 
@@ -77,12 +104,17 @@ if ([int]$config.listenPort -lt 1 -or [int]$config.listenPort -gt 65535) { Add-C
 if (-not @($config.publicOrigins).Count) { Add-ConfigError 'At least one publicOrigins value is required.' }
 foreach ($origin in @($config.publicOrigins)) {
   $uri = $null
-  if (-not [Uri]::TryCreate([string]$origin, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -notin @('http', 'https')) {
-    Add-ConfigError "Invalid public origin: $origin"
+  if (-not [Uri]::TryCreate([string]$origin, [UriKind]::Absolute, [ref]$uri) -or $uri.Scheme -ne 'http' -or
+      $uri.UserInfo -or $uri.Query -or $uri.Fragment -or $uri.AbsolutePath -ne '/') {
+    Add-ConfigError "Invalid public origin: $origin. Use an HTTP origin without credentials, path, query, or fragment."
   }
 }
 if (-not @($config.firewallRemoteAddresses).Count) { Add-ConfigError 'firewallRemoteAddresses cannot be empty.' }
-if (@($config.firewallRemoteAddresses) -contains '0.0.0.0/0') { Add-ConfigWarning 'Firewall allows every IPv4 address.' }
+foreach ($remoteAddress in @($config.firewallRemoteAddresses)) {
+  if (-not (Test-ApprovedFirewallRemoteAddress ([string]$remoteAddress))) {
+    Add-ConfigError "Invalid or overly broad firewall remote address: $remoteAddress. Use LocalSubnet, a specific IP address, or an approved CIDR narrower than /0."
+  }
+}
 
 foreach ($toolField in @('caddyVersion', 'caddySha256', 'winswVersion', 'winswSha256')) {
   if (-not (Has-Property $config.tools $toolField) -or -not [string]$config.tools.$toolField) { Add-ConfigError "tools.$toolField is required." }
@@ -109,6 +141,7 @@ if (-not @($config.services).Count) { Add-ConfigError 'At least one service is r
 $serviceNames = @{}
 $generatedServiceIds = @{}
 $ports = @{}
+$routePaths = @{}
 $apiCount = 0
 foreach ($service in @($config.services)) {
   $name = [string]$service.name
@@ -133,15 +166,26 @@ foreach ($service in @($config.services)) {
   if ($service.type -eq 'api') {
     $apiCount++
     if ([string]$service.portEnvironment -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { Add-ConfigError "API $name requires portEnvironment." }
+    if ([string]$service.bindAddressEnvironment -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') { Add-ConfigError "API $name requires bindAddressEnvironment." }
+    if ([string]$service.bindAddressEnvironment -eq [string]$service.portEnvironment) { Add-ConfigError "API $name bindAddressEnvironment must differ from portEnvironment." }
     foreach ($field in @('bluePort', 'greenPort')) {
       $port = [int]$service.$field
       if ($port -lt 1 -or $port -gt 65535) { Add-ConfigError "API $name $field is invalid." }
       elseif ($ports.ContainsKey($port)) { Add-ConfigError "Port $port is duplicated by API $name." } else { $ports[$port] = $name }
     }
-    if ([string]$service.healthPath -notmatch '^/') { Add-ConfigError "API $name healthPath must start with /." }
+    if ([string]$service.healthPath -notmatch '^/[^\s"{}\\]*$') { Add-ConfigError "API $name healthPath must be a safe absolute path." }
     if (-not @($service.routePaths).Count) { Add-ConfigError "API $name requires at least one routePaths entry." }
     foreach ($route in @($service.routePaths)) {
-      if ([string]$route -notmatch '^/') { Add-ConfigError "API $name route must start with /: $route" }
+      if ([string]$route -notmatch '^/[^\s"{}\\]*$') {
+        Add-ConfigError "API $name route must be a safe Caddy path matcher: $route"
+        continue
+      }
+      $routeKey = ([string]$route).ToLowerInvariant()
+      if ($routePaths.ContainsKey($routeKey)) {
+        Add-ConfigError "API route $route is duplicated by $name and $($routePaths[$routeKey])."
+      } else {
+        $routePaths[$routeKey] = $name
+      }
     }
   }
 }

@@ -16,7 +16,7 @@
 
 ## Architecture and Limits
 
-Caddy listens on the stable intranet port. Blue and green API/worker services point at immutable releases. A release starts in the inactive slot, passes loopback health checks, then receives traffic through an atomic Caddy reload. The old slot stops after the switch.
+Caddy listens on the stable intranet port. Blue and green API/worker services point at immutable releases. A release starts in the inactive slot, proves that every API listens only on loopback, passes readiness checks, then receives API and static frontend traffic through one atomic Caddy reload. The old slot stops after the switch.
 
 This is single-host resilience against failed releases and process crashes. It does not survive host, disk, power, operating-system, switch, or site failure.
 
@@ -28,6 +28,7 @@ This is single-host resilience against failed releases and process crashes. It d
 - Install supported Node.js and npm versions system-wide.
 - Keep secrets in system-level environment variables available to `LocalSystem`; reference them as `%VARIABLE_NAME%` and do not put secret values in `deployment.config.json`.
 - Confirm API readiness endpoints, worker graceful shutdown, persistent storage, and backward-compatible database migrations.
+- Confirm every API honors its configured bind-address environment variable and binds to `127.0.0.1`.
 - Define an application-consistent backup and isolated restore procedure.
 
 ## First Installation
@@ -48,6 +49,8 @@ Expected host changes:
 - Optionally disable AC sleep and hibernation.
 - Optionally register an application-consistent daily backup task.
 - Build and deploy the first release unless `-SkipInitialDeploy` is specified.
+
+Firewall and power changes are applied only after the first release switches successfully. Install, deploy, and rollback operations are mutually exclusive; if another operation holds the lock, wait for it to finish and inspect `status.ps1` before retrying.
 
 ## Routine Release
 

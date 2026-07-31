@@ -48,10 +48,10 @@ $placeholderOrigin = @($script:DeploymentConfig.publicOrigins | Where-Object { $
 Add-Check 'public-origins-customized' (-not $placeholderOrigin) 'Replace the template origin with the real IP or internal DNS name.'
 
 $portExpectations = [Collections.Generic.List[object]]::new()
-$portExpectations.Add([pscustomobject]@{ port = [int]$script:DeploymentConfig.listenPort; serviceName = Get-CaddyServiceName })
+$portExpectations.Add([pscustomobject]@{ port = [int]$script:DeploymentConfig.listenPort; serviceName = Get-CaddyServiceName; loopbackOnly = $false })
 foreach ($service in @($script:DeploymentConfig.services | Where-Object { $_.type -eq 'api' })) {
   foreach ($slot in @('blue', 'green')) {
-    $portExpectations.Add([pscustomobject]@{ port = Get-DeploymentPort $service $slot; serviceName = Get-DeploymentServiceName $service $slot })
+    $portExpectations.Add([pscustomobject]@{ port = Get-DeploymentPort $service $slot; serviceName = Get-DeploymentServiceName $service $slot; loopbackOnly = $true })
   }
 }
 $processes = @(Get-CimInstance Win32_Process)
@@ -63,13 +63,17 @@ foreach ($expectation in $portExpectations) {
     continue
   }
   $serviceInfo = Get-CimInstance Win32_Service -Filter "Name='$($expectation.serviceName)'" -ErrorAction SilentlyContinue
-  $owned = $serviceInfo -and (Test-ListenerProcessOwnership @($listeners.OwningProcess) ([int]$serviceInfo.ProcessId) $processes)
-  $detail = if ($owned) {
+  $owned = [bool]($serviceInfo -and (Test-ListenerProcessOwnership @($listeners.OwningProcess) ([int]$serviceInfo.ProcessId) $processes))
+  $loopbackSafe = -not $expectation.loopbackOnly -or (Test-DeploymentLoopbackListeners $listeners)
+  $passed = $owned -and $loopbackSafe
+  $detail = if ($passed) {
     "Owned by expected service $($expectation.serviceName); listener PID(s): $(@($listeners.OwningProcess) -join ', ')"
+  } elseif ($owned -and -not $loopbackSafe) {
+    "Expected service $($expectation.serviceName) is exposed beyond loopback at: $(@($listeners.LocalAddress | Sort-Object -Unique) -join ', ')"
   } else {
     "Unexpected listener PID(s): $(@($listeners.OwningProcess) -join ', '); expected service: $($expectation.serviceName)"
   }
-  Add-Check "port-$port" ([bool]$owned) $detail
+  Add-Check "port-$port" $passed $detail
 }
 
 $drive = [IO.Path]::GetPathRoot($script:ProductionRoot)

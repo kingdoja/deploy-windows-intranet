@@ -38,7 +38,8 @@ Do not present this as machine-level high availability. One host still has power
 - Keep generated deployment files in the business repository so Git records changes.
 - Keep application data, logs, secrets, tools, releases, and active-slot state outside the source checkout.
 - Run tests and build before creating a release directory.
-- Start the inactive slot, wait for every API health endpoint, switch Caddy atomically, then drain the old slot.
+- Force every API slot to loopback, start the inactive slot, wait for every readiness endpoint, switch frontend and API routing in one Caddy reload, then drain the old slot.
+- Serialize installation, deployment, and rollback with the generated host-wide operation lock.
 - Preserve both the active slot and the previous rollback target on any pre-switch failure.
 - Treat `switched-with-drain-warning`, `postCutoverWarning`, and `reconciliationWarning` as incidents requiring operator action even though traffic already switched.
 - Run `scripts/test-skill.ps1` after changing this Skill or its generated PowerShell assets.

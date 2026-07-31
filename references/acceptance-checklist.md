@@ -5,6 +5,7 @@
 - Repository instructions and current worktree state are understood.
 - Every configured test, build, entry, include, and static-output path exists.
 - Every API health endpoint reflects dependency readiness, not merely process liveness.
+- Every API honors `bindAddressEnvironment` and listens only on `127.0.0.1`; wildcard and LAN-facing slot listeners are rejected.
 - Workers have a verified graceful-stop or lease-recovery strategy.
 - Persistent data and secret locations are outside releases.
 - Database migrations support both active and rollback versions.
@@ -17,6 +18,7 @@
 
 - Caddy and WinSW downloads match pinned hashes.
 - Only the intended firewall port and remote addresses are created.
+- Firewall and power settings remain unchanged if the initial release fails before cutover.
 - All generated Windows services have expected executable, working directory, environment, startup type, and recovery settings.
 - The first release passes health checks through loopback and through the stable intranet URL.
 - Static pages and APIs return expected responses from a second intranet machine.
@@ -26,7 +28,7 @@
 
 - A new release starts in the inactive slot while the stable URL remains healthy.
 - Failed tests, build, dependency installation, or health checks do not alter the active slot.
-- Caddy reload switches APIs only after all new APIs are ready.
+- One Caddy reload switches APIs and the immutable static frontend only after all new APIs are ready.
 - Old workers drain or safely release work before their timeout.
 - Rollback restores the previous frontend and APIs without changing persistent data.
 - A forced inactive-slot API crash is automatically recovered without affecting the stable URL.
@@ -34,6 +36,7 @@
 - Removing or renaming a configured service through `install.ps1` stops and uninstalls the obsolete service after cutover.
 - Memory Guard process-tree accounting is covered by `scripts/test-skill.ps1` and produces no `$PID` automatic-variable errors.
 - `status.ps1` reports no unresolved post-cutover or reconciliation warning.
+- A concurrent install, deploy, or rollback attempt is rejected by the deployment operation lock.
 
 ## Backup and Recovery
 

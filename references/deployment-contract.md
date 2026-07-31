@@ -1,5 +1,13 @@
 # Windows Intranet Deployment Contract
 
+- [Supported Architecture](#supported-architecture)
+- [Required Application Contracts](#required-application-contracts)
+- [Configuration](#configuration)
+- [Command Objects](#command-objects)
+- [Service Objects](#service-objects)
+- [Configuration Reconciliation](#configuration-reconciliation)
+- [Project-Specific Adaptation](#project-specific-adaptation)
+
 ## Supported Architecture
 
 Use one stable Caddy listener and two release slots. Each slot owns a Windows service for every configured API and worker. Only one slot receives traffic and runs workers. Releases are immutable directories; persistent data lives under the production root.
@@ -10,25 +18,25 @@ The template prevents deployment-caused interruptions. It does not survive loss 
 
 Before installation, establish all of these contracts:
 
-1. Each API exposes an unauthenticated loopback health endpoint that returns HTTP 2xx only when ready. JSON fields `ok: false` or `ready: false` are treated as unhealthy.
+1. Each API honors its configured `bindAddressEnvironment`, binds only to `127.0.0.1`, and exposes an unauthenticated loopback health endpoint that returns HTTP 2xx only when ready. JSON fields `ok: false` or `ready: false` are treated as unhealthy.
 2. Each process exits on a normal Windows service stop. Workers stop accepting new jobs and finish, release, or safely lease out active work within `stopTimeoutSeconds`.
 3. Persistent paths are selected through configuration or environment variables and do not depend on the release directory.
 4. Database migrations remain compatible with the current and previous release. Use expand, migrate/backfill, switch, then contract in a later release.
-5. Static asset filenames are content-hashed. The publisher copies assets before atomically replacing `index.html`.
+5. Static asset filenames are content-hashed. Caddy serves static output from the immutable active release so one configuration reload switches frontend and API routing together.
 6. Live database backup uses an application-aware command. For SQLite, use the SQLite backup API or an application backup endpoint, not an uncoordinated file copy.
 
 ## Configuration
 
-Place `deployment.config.json` beside the generated PowerShell scripts. Keep it in source control. Use schema version `1`.
+Place `deployment.config.json` beside the generated PowerShell scripts. Keep it in source control. Use schema version `2`; migrate version 1 configs by adding `bindAddressEnvironment` to every API service.
 
 Top-level fields:
 
 - `appName`: Human-facing name.
 - `servicePrefix`: ASCII letters and digits used in Windows service, task, and firewall names.
-- `productionRoot`: Absolute application-owned directory. Never use a drive root, user profile, source checkout, or shared parent directory.
+- `productionRoot`: Absolute application-owned directory whose final directory name equals `servicePrefix`. Never use a drive root, user profile, source checkout, or shared parent directory.
 - `listenPort`: Stable Caddy listener, normally `80`.
-- `publicOrigins`: Browser origins accepted by the application. The deployment engine exposes them through the configured origin environment variable.
-- `firewallRemoteAddresses`: Windows firewall remote addresses such as `LocalSubnet` or an approved corporate CIDR. Avoid broad ranges without IT approval.
+- `publicOrigins`: HTTP browser origins accepted by the application. Do not include credentials, paths, queries, or fragments. This template does not configure TLS; add a reviewed TLS variant before using HTTPS origins.
+- `firewallRemoteAddresses`: Windows firewall remote addresses such as `LocalSubnet`, specific addresses, or approved non-global corporate CIDRs. Global ranges such as `0.0.0.0/0`, `::/0`, and `Any` are rejected.
 - `tools`: Pinned Caddy and WinSW versions with SHA-256 hashes.
 - `release`: Deterministic test, build, dependency-install, and copy settings.
 - `staticSite`: Enable static publishing and name the build output directory.
@@ -64,6 +72,7 @@ API service example:
   "type": "api",
   "entry": "server\\api.js",
   "portEnvironment": "PORT",
+  "bindAddressEnvironment": "HOST",
   "bluePort": 18100,
   "greenPort": 28100,
   "healthPath": "/api/health",
@@ -76,6 +85,8 @@ API service example:
 
 Worker objects omit ports, health paths, and routes. Give every service a unique lowercase `name`. Entry paths must be relative and must not traverse outside a release.
 
+The deployment engine sets every API's `bindAddressEnvironment` to `127.0.0.1` and verifies the actual listening address after readiness succeeds. Confirm that the selected application framework honors that variable; a process listening on a wildcard or non-loopback address is rejected before cutover.
+
 Available string tokens in environment values are `{ProductionRoot}`, `{Slot}`, `{Port}`, and `{ReleasePath}`. Reference machine-level secret variables as `%VARIABLE_NAME%`; do not store their values in JSON.
 
 Keep `servicePrefix` stable after first installation. Define secret references as system-level environment variables because services and scheduled backups run as `LocalSystem`. The installer preserves `%VARIABLE_NAME%` in WinSW XML instead of resolving it to plaintext during installation.
@@ -86,13 +97,15 @@ Run `install.ps1` after adding, removing, or renaming services, changing service
 
 Normal code-only releases may use `deploy.ps1`. A failed pre-switch release restores the previous inactive-slot junction so the last reliable rollback target remains available. After traffic switches, an old-slot stop failure produces `switched-with-drain-warning` and `state/post-cutover-warning.json`; it does not claim that the cutover itself failed.
 
+Installation, deployment, and rollback share a host-wide mutex keyed by the canonical production root. Do not bypass the lock. Installation applies firewall and power changes only after the release has switched successfully.
+
 ## Project-Specific Adaptation
 
 Inspect and customize these areas for every project:
 
 - API and worker entry points
 - Route ownership and route ordering
-- Port environment variable names
+- Port and bind-address environment variable names
 - Test/build/install commands and copied release files
 - Persistent-root and allowed-origin environment variables
 - Worker stop timeout and memory limits

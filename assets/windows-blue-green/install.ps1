@@ -13,8 +13,10 @@ $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'preflight.ps1') -ConfigPath $ConfigPath -ProjectRoot $SourceRoot
 . (Join-Path $PSScriptRoot 'common.ps1') -ConfigPath $ConfigPath
 . (Join-Path $PSScriptRoot 'install-core.ps1')
-Assert-DeploymentAdministrator
-Initialize-DeploymentDirectories
+$operationLock = Enter-DeploymentOperationLock
+try {
+  Assert-DeploymentAdministrator
+  Initialize-DeploymentDirectories
 
 function Escape-DeploymentXml([string]$Value) { return [Security.SecurityElement]::Escape($Value) }
 
@@ -93,7 +95,10 @@ function Get-ServiceEnvironmentXml($Service, [string]$Slot, [string]$CurrentPath
   foreach ($property in $Service.environment.PSObject.Properties) {
     $values[$property.Name] = Expand-DeploymentValue ([string]$property.Value) $Service $Slot $CurrentPath
   }
-  if ($Service.type -eq 'api') { $values[[string]$Service.portEnvironment] = [string](Get-DeploymentPort $Service $Slot) }
+  if ($Service.type -eq 'api') {
+    $values[[string]$Service.portEnvironment] = [string](Get-DeploymentPort $Service $Slot)
+    $values[[string]$Service.bindAddressEnvironment] = '127.0.0.1'
+  }
   return @($values.GetEnumerator() | ForEach-Object {
     "  <env name=`"$(Escape-DeploymentXml ([string]$_.Key))`" value=`"$(Escape-DeploymentXml ([string]$_.Value))`" />"
   }) -join "`n"
@@ -271,8 +276,11 @@ function Sync-ObsoleteDeploymentServices([string[]]$PreviousIds, [string[]]$Expe
 
 function Install-HostSettings {
   $firewallName = "$($script:DeploymentConfig.servicePrefix) Intranet HTTP"
+  $candidateName = "$firewallName Candidate"
+  Get-NetFirewallRule -DisplayName $candidateName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
+  New-NetFirewallRule -DisplayName $candidateName -Direction Inbound -Action Allow -Protocol TCP -LocalPort ([int]$script:DeploymentConfig.listenPort) -RemoteAddress @($script:DeploymentConfig.firewallRemoteAddresses) -Profile Domain,Private | Out-Null
   Get-NetFirewallRule -DisplayName $firewallName -ErrorAction SilentlyContinue | Remove-NetFirewallRule
-  New-NetFirewallRule -DisplayName $firewallName -Direction Inbound -Action Allow -Protocol TCP -LocalPort ([int]$script:DeploymentConfig.listenPort) -RemoteAddress @($script:DeploymentConfig.firewallRemoteAddresses) -Profile Domain,Private | Out-Null
+  Get-NetFirewallRule -DisplayName $candidateName | Set-NetFirewallRule -NewDisplayName $firewallName
 
   if ($script:DeploymentConfig.power.disableAcSleep) { & powercfg.exe /change standby-timeout-ac 0 | Out-Null }
   if ($script:DeploymentConfig.power.disableAcHibernate) { & powercfg.exe /change hibernate-timeout-ac 0 | Out-Null }
@@ -302,14 +310,14 @@ foreach ($file in @('common.ps1', 'memory-guard-core.ps1', 'memory-guard.ps1', '
 Copy-Item -LiteralPath $ConfigPath -Destination (Join-Path $script:ServiceRoot 'deployment.config.json') -Force
 Install-ApplicationServices
 Install-InfrastructureServices
-Install-HostSettings
 
 if (-not $SkipInitialDeploy) {
   & (Join-Path $PSScriptRoot 'deploy.ps1') -ConfigPath $ConfigPath -SourceRoot $SourceRoot -SkipTests:$SkipTests -AllowDirty:$AllowDirty
+  Install-HostSettings
   Sync-ObsoleteDeploymentServices $previousManagedServiceIds $expectedManagedServiceIds
   Sync-BackupTask
 } else {
-  Write-Warning 'Initial deployment was skipped; obsolete services and backup task state were not reconciled.'
+  Write-Warning 'Initial deployment was skipped; host settings, obsolete services, and backup task state were not reconciled.'
 }
 
 if ($script:DeploymentConfig.memoryGuard.enabled) {
@@ -321,3 +329,6 @@ if ($script:DeploymentConfig.memoryGuard.enabled) {
 Write-Output "Installation completed for $($script:DeploymentConfig.appName)."
 Write-Output "Production root: $script:ProductionRoot"
 Write-Output "Stable URL: $(@($script:DeploymentConfig.publicOrigins)[0])"
+} finally {
+  Exit-DeploymentOperationLock $operationLock
+}

@@ -13,7 +13,6 @@ $script:ToolsRoot = Join-Path $script:ProductionRoot 'tools'
 $script:ServiceRoot = Join-Path $script:ProductionRoot 'service'
 $script:ReleasesRoot = Join-Path $script:ProductionRoot 'releases'
 $script:SlotsRoot = Join-Path $script:ProductionRoot 'slots'
-$script:WebRoot = Join-Path $script:ProductionRoot 'web'
 $script:StateRoot = Join-Path $script:ProductionRoot 'state'
 $script:LogsRoot = Join-Path $script:ProductionRoot 'logs'
 $script:CaddyExe = Join-Path $script:ToolsRoot 'caddy.exe'
@@ -28,13 +27,54 @@ function Assert-DeploymentAdministrator {
   }
 }
 
+function Enter-DeploymentOperationLock([int]$TimeoutSeconds = 5) {
+  $sha256 = [Security.Cryptography.SHA256]::Create()
+  try {
+    $identityBytes = [Text.Encoding]::UTF8.GetBytes($script:ProductionRoot.ToUpperInvariant())
+    $identityHash = -join ($sha256.ComputeHash($identityBytes) | ForEach-Object { $_.ToString('x2') })
+  } finally {
+    $sha256.Dispose()
+  }
+  $mutexName = "Global\DeployWindowsIntranet-$($identityHash.Substring(0, 24))"
+  $mutex = [Threading.Mutex]::new($false, $mutexName)
+  try {
+    $acquired = $false
+    try {
+      $acquired = $mutex.WaitOne([TimeSpan]::FromSeconds($TimeoutSeconds))
+    } catch [Threading.AbandonedMutexException] {
+      $acquired = $true
+    }
+    if (-not $acquired) {
+      throw "Another deployment, rollback, or installation is already running for $($script:DeploymentConfig.servicePrefix)."
+    }
+    return $mutex
+  } catch {
+    $mutex.Dispose()
+    throw
+  }
+}
+
+function Exit-DeploymentOperationLock($Mutex) {
+  if (-not $Mutex) { return }
+  try { $Mutex.ReleaseMutex() } finally { $Mutex.Dispose() }
+}
+
 function Initialize-DeploymentDirectories {
-  foreach ($path in @($script:ProductionRoot, $script:ToolsRoot, $script:ServiceRoot, $script:ReleasesRoot, $script:SlotsRoot, $script:WebRoot, $script:StateRoot, $script:LogsRoot, (Join-Path $script:ProductionRoot 'data'))) {
+  foreach ($path in @($script:ProductionRoot, $script:ToolsRoot, $script:ServiceRoot, $script:ReleasesRoot, $script:SlotsRoot, $script:StateRoot, $script:LogsRoot, (Join-Path $script:ProductionRoot 'data'))) {
     New-Item -ItemType Directory -Path $path -Force | Out-Null
   }
   foreach ($slot in @('blue', 'green')) {
     New-Item -ItemType Directory -Path (Join-Path $script:SlotsRoot $slot) -Force | Out-Null
   }
+}
+
+function Test-DeploymentLoopbackListeners($Listeners) {
+  $listeners = @($Listeners)
+  if (-not $listeners.Count) { return $false }
+  foreach ($listener in $listeners) {
+    if ([string]$listener.LocalAddress -notin @('127.0.0.1', '::1', '::ffff:127.0.0.1')) { return $false }
+  }
+  return $true
 }
 
 function Invoke-DeploymentCommand($Command, [string]$WorkingDirectory) {
@@ -102,6 +142,15 @@ function Get-SlotRelease([string]$Slot) {
   return [string]@($item.Target)[0]
 }
 
+function Remove-DeploymentJunction([string]$Path) {
+  if (-not (Test-Path -LiteralPath $Path)) { return }
+  $item = Get-Item -LiteralPath $Path -Force
+  if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw "Refusing to remove a path that is not a junction: $Path"
+  }
+  [IO.Directory]::Delete($item.FullName)
+}
+
 function Set-SlotRelease([string]$Slot, [string]$ReleasePath) {
   $resolvedRelease = (Resolve-Path -LiteralPath $ReleasePath).Path
   $resolvedReleasesRoot = (Resolve-Path -LiteralPath $script:ReleasesRoot).Path.TrimEnd('\') + '\'
@@ -112,31 +161,26 @@ function Set-SlotRelease([string]$Slot, [string]$ReleasePath) {
   $next = "$current.$PID.next"
   $previous = "$current.$PID.previous"
   foreach ($temporary in @($next, $previous)) {
-    if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force }
+    if (Test-Path -LiteralPath $temporary) { Remove-DeploymentJunction $temporary }
   }
   New-Item -ItemType Junction -Path $next -Target $resolvedRelease | Out-Null
   $hadCurrent = Test-Path -LiteralPath $current
   try {
     if ($hadCurrent) { Move-Item -LiteralPath $current -Destination $previous }
     Move-Item -LiteralPath $next -Destination $current
-    if ($hadCurrent -and (Test-Path -LiteralPath $previous)) { Remove-Item -LiteralPath $previous -Force }
+    if ($hadCurrent -and (Test-Path -LiteralPath $previous)) { Remove-DeploymentJunction $previous }
   } catch {
     if ((-not (Test-Path -LiteralPath $current)) -and (Test-Path -LiteralPath $previous)) {
       Move-Item -LiteralPath $previous -Destination $current
     }
-    if (Test-Path -LiteralPath $next) { Remove-Item -LiteralPath $next -Force }
+    if (Test-Path -LiteralPath $next) { Remove-DeploymentJunction $next }
     throw
   }
 }
 
 function Clear-SlotRelease([string]$Slot) {
   $current = Get-SlotCurrentPath $Slot
-  if (-not (Test-Path -LiteralPath $current)) { return }
-  $item = Get-Item -LiteralPath $current -Force
-  if (-not ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-    throw "Refusing to remove a slot path that is not a junction: $current"
-  }
-  Remove-Item -LiteralPath $current -Force
+  Remove-DeploymentJunction $current
 }
 
 function Restore-SlotRelease([string]$Slot, [string]$ReleasePath) {
@@ -186,6 +230,11 @@ function Wait-DeploymentHealth($Service, [string]$Slot, [int]$TimeoutSeconds = 9
         if ($json -and (($json.PSObject.Properties.Name -contains 'ok' -and $json.ok -eq $false) -or ($json.PSObject.Properties.Name -contains 'ready' -and $json.ready -eq $false))) {
           $lastError = "Health JSON reports not ready: $($response.Content)"
         } else {
+          $listeners = @(Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue)
+          if (-not (Test-DeploymentLoopbackListeners $listeners)) {
+            $addresses = @($listeners | ForEach-Object { [string]$_.LocalAddress } | Sort-Object -Unique)
+            throw "API $($Service.name) must listen only on loopback for slot isolation. Observed: $($addresses -join ', ')"
+          }
           return
         }
       }
@@ -258,7 +307,11 @@ function Write-DeploymentCaddyfile([string]$Slot) {
     $index++
   }
   if ($script:DeploymentConfig.staticSite.enabled) {
-    $web = $script:WebRoot.Replace('\', '/')
+    $releasePath = Get-SlotRelease $Slot
+    if (-not $releasePath) { throw "No release is attached to slot $Slot." }
+    $staticRoot = Join-Path $releasePath $script:DeploymentConfig.staticSite.outputDirectory
+    if (-not (Test-Path -LiteralPath (Join-Path $staticRoot 'index.html'))) { throw "Static output has no index.html: $staticRoot" }
+    $web = $staticRoot.Replace('\', '/')
     $lines.Add('  handle {')
     $lines.Add("    root * `"$web`"")
     $lines.Add('    try_files {path} /index.html')
@@ -287,19 +340,6 @@ function Publish-DeploymentCaddyConfiguration([string]$Slot) {
   } else {
     Start-Service -Name $serviceName
   }
-}
-
-function Publish-DeploymentWeb([string]$ReleasePath) {
-  if (-not $script:DeploymentConfig.staticSite.enabled) { return }
-  $dist = Join-Path $ReleasePath $script:DeploymentConfig.staticSite.outputDirectory
-  if (-not (Test-Path -LiteralPath (Join-Path $dist 'index.html'))) { throw "Static output has no index.html: $dist" }
-  New-Item -ItemType Directory -Path $script:WebRoot -Force | Out-Null
-  foreach ($item in Get-ChildItem -LiteralPath $dist -Force | Where-Object { $_.Name -ne 'index.html' }) {
-    Copy-Item -LiteralPath $item.FullName -Destination $script:WebRoot -Recurse -Force
-  }
-  $temporaryIndex = Join-Path $script:WebRoot "index.html.$PID.tmp"
-  Copy-Item -LiteralPath (Join-Path $dist 'index.html') -Destination $temporaryIndex -Force
-  Move-Item -LiteralPath $temporaryIndex -Destination (Join-Path $script:WebRoot 'index.html') -Force
 }
 
 function Set-ActiveDeploymentState([string]$Slot, [string]$ReleasePath) {

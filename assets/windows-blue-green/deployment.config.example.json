@@ -1,5 +1,5 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "appName": "Intranet App",
   "servicePrefix": "IntranetApp",
   "productionRoot": "C:\\ProgramData\\IntranetApp",
@@ -46,6 +46,7 @@
       "type": "api",
       "entry": "server\\api.js",
       "portEnvironment": "PORT",
+      "bindAddressEnvironment": "HOST",
       "bluePort": 18100,
       "greenPort": 28100,
       "healthPath": "/api/health",
@@ -82,4 +83,3 @@
     "disableAcHibernate": true
   }
 }
-

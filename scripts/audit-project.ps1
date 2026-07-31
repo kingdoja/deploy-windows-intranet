@@ -79,7 +79,7 @@ $result = [ordered]@{
   hasExistingDeployment = Test-Path -LiteralPath (Join-Path $root 'deploy\windows')
   requiresManualReview = @(
     'Confirm API and worker entry points.',
-    'Confirm health readiness semantics and graceful shutdown.',
+    'Confirm loopback bind-address configuration, health readiness semantics, and graceful shutdown.',
     'Confirm persistent paths, migration compatibility, backup, and restore.',
     'Confirm internal DNS, firewall range, and secret injection.'
   )
