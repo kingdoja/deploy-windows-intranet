@@ -5,6 +5,7 @@
 - [Configuration](#configuration)
 - [Command Objects](#command-objects)
 - [Service Objects](#service-objects)
+- [Schema v1 Migration](#schema-v1-migration)
 - [Configuration Reconciliation](#configuration-reconciliation)
 - [Project-Specific Adaptation](#project-specific-adaptation)
 
@@ -90,6 +91,14 @@ The deployment engine sets every API's `bindAddressEnvironment` to `127.0.0.1` a
 Available string tokens in environment values are `{ProductionRoot}`, `{Slot}`, `{Port}`, and `{ReleasePath}`. Reference machine-level secret variables as `%VARIABLE_NAME%`; do not store their values in JSON.
 
 Keep `servicePrefix` stable after first installation. Define secret references as system-level environment variables because services and scheduled backups run as `LocalSystem`. The installer preserves `%VARIABLE_NAME%` in WinSW XML instead of resolving it to plaintext during installation.
+
+## Schema v1 Migration
+
+Run `scripts/migrate-schema-v1-to-v2.ps1 -ProjectRoot <path>` first without `-Apply`. The dry run builds and validates a v2 candidate, reports runtime files that differ from the current Skill, and makes no project changes.
+
+Use `-Apply` only from a clean Git worktree. The migration creates a ZIP backup, adds `bindAddressEnvironment` to every API, updates `schemaVersion`, synchronizes the v2 runtime scripts, and validates the result. A failed post-write validation restores the original project files automatically. It never runs installation or changes Windows services, firewall rules, scheduled tasks, or power settings.
+
+Before migration, update and deploy the application so each API already honors the selected bind-address variable and listens on loopback. After migration, review the Git diff, run `preflight.ps1`, and run `install.ps1` rather than `deploy.ps1` so WinSW service environments and production-side helper scripts are refreshed.
 
 ## Configuration Reconciliation
 

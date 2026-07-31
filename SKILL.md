@@ -25,13 +25,14 @@ Do not present this as machine-level high availability. One host still has power
 1. Read repository instructions. If `.codegraph/` exists, use CodeGraph before searching or reading application code.
 2. Run `scripts/audit-project.ps1 -ProjectRoot <path>` for a read-only inventory.
 3. Read [references/deployment-contract.md](references/deployment-contract.md). Inspect application entry points, health handlers, persistent storage, shutdown behavior, build/test commands, and database migrations.
-4. Run `scripts/scaffold-project.ps1 -ProjectRoot <path> -AppName <name>` to create project-owned files. Never overwrite an existing deployment directory without an explicit user request and `-Force`.
-5. Edit `deploy/windows/deployment.config.json` to match the inspected project. Keep secrets out of the file; reference machine-level environment variables with `%VARIABLE_NAME%`.
-6. Adapt project-specific backup or data migration hooks. Require application-consistent database backup. Do not substitute a raw file copy for a live SQLite database backup.
-7. Run `scripts/validate-project.ps1 -ProjectRoot <path>`. Fix every error before installation.
-8. Run the generated `preflight.ps1`. Report host changes that installation will make: downloads, service registration, scheduled tasks, firewall rules, power settings, and production directories.
-9. Execute `install.ps1` only when the user asked to deploy or install on that host. Installation is a privileged, state-changing action.
-10. Validate using [references/acceptance-checklist.md](references/acceptance-checklist.md). Generate and customize the project Runbook; record real URLs, service names, backup destinations, owners, and recovery steps.
+4. If the project already has a schema v1 package, run `scripts/migrate-schema-v1-to-v2.ps1 -ProjectRoot <path>` as a dry run. Review the result, then rerun with `-Apply`; never replace an existing package with scaffold `-Force` as a migration shortcut.
+5. For a new package, run `scripts/scaffold-project.ps1 -ProjectRoot <path> -AppName <name>` to create project-owned files. Never overwrite an existing deployment directory without an explicit user request and `-Force`.
+6. Edit `deploy/windows/deployment.config.json` to match the inspected project. Keep secrets out of the file; reference machine-level environment variables with `%VARIABLE_NAME%`.
+7. Adapt project-specific backup or data migration hooks. Require application-consistent database backup. Do not substitute a raw file copy for a live SQLite database backup.
+8. Run `scripts/validate-project.ps1 -ProjectRoot <path>`. Fix every error before installation.
+9. Run the generated `preflight.ps1`. Report host changes that installation will make: downloads, service registration, scheduled tasks, firewall rules, power settings, and production directories.
+10. Execute `install.ps1` only when the user asked to deploy or install on that host. Installation is a privileged, state-changing action.
+11. Validate using [references/acceptance-checklist.md](references/acceptance-checklist.md). Generate and customize the project Runbook; record real URLs, service names, backup destinations, owners, and recovery steps.
 
 ## Operating Rules
 
@@ -51,6 +52,7 @@ Do not present this as machine-level high availability. One host still has power
 
 - `scripts/audit-project.ps1`: inspect a project without modifying it.
 - `scripts/scaffold-project.ps1`: copy the project-owned deployment template and Runbook.
+- `scripts/migrate-schema-v1-to-v2.ps1`: dry-run or apply a recoverable schema v1 package migration without installing host services.
 - `scripts/validate-project.ps1`: validate configuration, referenced files, and the generated package.
 - `scripts/test-skill.ps1`: run isolated regression tests without installing services or changing host settings.
 - `assets/windows-blue-green/`: files copied into the target project.

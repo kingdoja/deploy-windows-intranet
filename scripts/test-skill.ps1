@@ -46,6 +46,42 @@ try {
   & (Join-Path $skillRoot 'scripts\scaffold-project.ps1') -ProjectRoot $projectRoot -AppName 'Skill Fixture' | Out-Null
   $configPath = Join-Path $deploymentRoot 'deployment.config.json'
   $config = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+  $config.schemaVersion = 1
+  foreach ($api in @($config.services | Where-Object { $_.type -eq 'api' })) {
+    $api.PSObject.Properties.Remove('bindAddressEnvironment')
+  }
+  $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding utf8
+  Write-TestFile (Join-Path $deploymentRoot 'common.ps1') '# simulated customized schema v1 runtime'
+
+  $git = Get-Command git.exe -ErrorAction Stop
+  & $git.Source -C $projectRoot init --quiet
+  & $git.Source -C $projectRoot config user.email 'skill-test@example.invalid'
+  & $git.Source -C $projectRoot config user.name 'Skill Test'
+  & $git.Source -C $projectRoot add --all
+  & $git.Source -C $projectRoot commit --quiet -m 'schema v1 fixture'
+  if ($LASTEXITCODE -ne 0) { throw 'Failed to create the schema v1 Git fixture.' }
+
+  $migrationScript = Join-Path $skillRoot 'scripts\migrate-schema-v1-to-v2.ps1'
+  & $migrationScript -ProjectRoot $projectRoot | Out-Null
+  $dryRunConfig = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+  Assert-Equal 1 $dryRunConfig.schemaVersion 'Migration dry run changed the project.'
+  Assert-Equal '# simulated customized schema v1 runtime' (Get-Content -Raw -LiteralPath (Join-Path $deploymentRoot 'common.ps1')) 'Migration dry run changed a runtime script.'
+
+  $migrationBackup = Join-Path $fixtureRoot 'schema-v1-backup.zip'
+  & $migrationScript -ProjectRoot $projectRoot -Apply -BackupPath $migrationBackup | Out-Null
+  $migratedConfig = Get-Content -Raw -LiteralPath $configPath | ConvertFrom-Json
+  Assert-Equal 2 $migratedConfig.schemaVersion 'Schema v1 configuration was not migrated.'
+  Assert-Equal 'HOST' $migratedConfig.services[0].bindAddressEnvironment 'API bind-address environment was not added.'
+  Assert-True (Test-Path -LiteralPath $migrationBackup) 'Migration backup was not created.'
+  Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $deploymentRoot 'common.ps1')) -match 'Enter-DeploymentOperationLock') 'Schema v2 runtime scripts were not synchronized.'
+  $restoredBackup = Join-Path $fixtureRoot 'restored-schema-v1-backup'
+  Expand-Archive -LiteralPath $migrationBackup -DestinationPath $restoredBackup
+  $restoredConfigs = @(Get-ChildItem -LiteralPath $restoredBackup -Recurse -Filter 'deployment.config.json' -File)
+  Assert-Equal 1 $restoredConfigs.Count 'Migration backup does not contain exactly one deployment configuration.'
+  $restoredConfig = Get-Content -Raw -LiteralPath $restoredConfigs[0].FullName | ConvertFrom-Json
+  Assert-Equal 1 $restoredConfig.schemaVersion 'Migration backup did not preserve the schema v1 configuration.'
+
+  $config = $migratedConfig
   $config.productionRoot = 'C:\ProgramData\SkillFixture'
   $config.publicOrigins = @('http://127.0.0.1:19080')
   $config.listenPort = 19080

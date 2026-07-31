@@ -2,6 +2,7 @@
 
 ## Before Installation
 
+- Schema v1 packages were migrated with a clean Git worktree, the ZIP backup path was recorded, and the migration diff was reviewed.
 - Repository instructions and current worktree state are understood.
 - Every configured test, build, entry, include, and static-output path exists.
 - Every API health endpoint reflects dependency readiness, not merely process liveness.
