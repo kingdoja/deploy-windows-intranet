@@ -13,6 +13,8 @@
 
 Use one stable Caddy listener and two release slots. Each slot owns a Windows service for every configured API and worker. Only one slot receives traffic and runs workers. Releases are immutable directories; persistent data lives under the production root.
 
+For full-stack Next.js, disable `staticSite`, route `/*` to one API service, and let that service render pages and APIs. When several applications share one host, keep this per-application stable listener on a unique port and place hostname routing in a separately owned shared gateway; see `shared-gateway.md`.
+
 The template prevents deployment-caused interruptions. It does not survive loss of the physical host.
 
 ## Required Application Contracts
@@ -36,6 +38,7 @@ Top-level fields:
 - `servicePrefix`: ASCII letters and digits used in Windows service, task, and firewall names.
 - `productionRoot`: Absolute application-owned directory whose final directory name equals `servicePrefix`. Never use a drive root, user profile, source checkout, or shared parent directory.
 - `listenPort`: Stable Caddy listener, normally `80`.
+- `caddyAdminPort`: Loopback-only Caddy administration port. It defaults to `2019` for older schema-v2 packages, but every Caddy process on one host must use a unique value.
 - `publicOrigins`: HTTP browser origins accepted by the application. Do not include credentials, paths, queries, or fragments. This template does not configure TLS; add a reviewed TLS variant before using HTTPS origins.
 - `firewallRemoteAddresses`: Windows firewall remote addresses such as `LocalSubnet`, specific addresses, or approved non-global corporate CIDRs. Global ranges such as `0.0.0.0/0`, `::/0`, and `Any` are rejected.
 - `tools`: Pinned Caddy and WinSW versions with SHA-256 hashes.

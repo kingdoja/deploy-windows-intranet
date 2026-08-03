@@ -77,8 +77,9 @@ function Install-WrappedDeploymentService([string]$Id, [string]$Xml) {
   }
   Set-DeploymentAtomicText $serviceXml $Xml
   if (Get-Service -Name $Id -ErrorAction SilentlyContinue) {
-    & $serviceExe refresh
-    if ($LASTEXITCODE -ne 0) { throw "Failed to refresh Windows service: $Id" }
+    # WinSW 2.12 has no `refresh` command. It reads the sidecar XML whenever
+    # the service starts; install.ps1 deploys through the inactive slot first.
+    Write-Host "Updated Windows service configuration: $Id"
   } else {
     & $serviceExe install
     if ($LASTEXITCODE -ne 0) { throw "Failed to install Windows service: $Id" }

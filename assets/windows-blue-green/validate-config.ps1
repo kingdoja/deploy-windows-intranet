@@ -101,6 +101,9 @@ if (-not [IO.Path]::IsPathRooted([string]$config.productionRoot)) {
 }
 
 if ([int]$config.listenPort -lt 1 -or [int]$config.listenPort -gt 65535) { Add-ConfigError 'listenPort must be between 1 and 65535.' }
+$caddyAdminPort = if (Has-Property $config 'caddyAdminPort') { [int]$config.caddyAdminPort } else { 2019 }
+if ($caddyAdminPort -lt 1 -or $caddyAdminPort -gt 65535) { Add-ConfigError 'caddyAdminPort must be between 1 and 65535.' }
+if ($caddyAdminPort -eq [int]$config.listenPort) { Add-ConfigError 'caddyAdminPort conflicts with listenPort.' }
 if (-not @($config.publicOrigins).Count) { Add-ConfigError 'At least one publicOrigins value is required.' }
 foreach ($origin in @($config.publicOrigins)) {
   $uri = $null
@@ -191,6 +194,7 @@ foreach ($service in @($config.services)) {
 }
 if ($apiCount -eq 0) { Add-ConfigError 'At least one API service is required.' }
 if ($ports.ContainsKey([int]$config.listenPort)) { Add-ConfigError 'listenPort conflicts with a slot API port.' }
+if ($ports.ContainsKey($caddyAdminPort)) { Add-ConfigError 'caddyAdminPort conflicts with a slot API port.' }
 
 if ($config.memoryGuard.enabled) {
   if ([int]$config.memoryGuard.pollSeconds -lt 10) { Add-ConfigError 'memoryGuard.pollSeconds must be at least 10.' }

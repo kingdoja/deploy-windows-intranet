@@ -38,7 +38,7 @@ $configPath = Join-Path $deploymentRoot 'deployment.config.json'
 $skillRoot = Split-Path -Parent $PSScriptRoot
 $templateRoot = Join-Path $skillRoot 'assets\windows-blue-green'
 $templateValidator = Join-Path $templateRoot 'validate-config.ps1'
-$runtimeFiles = @(
+$requiredExistingRuntimeFiles = @(
   'common.ps1',
   'deploy.ps1',
   'install.ps1',
@@ -46,6 +46,7 @@ $runtimeFiles = @(
   'rollback.ps1',
   'validate-config.ps1'
 )
+$runtimeFiles = @($requiredExistingRuntimeFiles) + @('configure-shared-gateway.ps1')
 
 if (-not (Test-Path -LiteralPath $configPath)) { throw "Deployment configuration not found: $configPath" }
 if ($BindAddressEnvironment -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
@@ -53,6 +54,8 @@ if ($BindAddressEnvironment -notmatch '^[A-Za-z_][A-Za-z0-9_]*$') {
 }
 foreach ($file in $runtimeFiles) {
   if (-not (Test-Path -LiteralPath (Join-Path $templateRoot $file))) { throw "Skill runtime template is missing: $file" }
+}
+foreach ($file in $requiredExistingRuntimeFiles) {
   if (-not (Test-Path -LiteralPath (Join-Path $deploymentRoot $file))) { throw "Generated deployment package is missing: $file" }
 }
 
@@ -79,7 +82,8 @@ if ($configChanged) {
 $outdatedRuntimeFiles = @($runtimeFiles | Where-Object {
   $source = Join-Path $templateRoot $_
   $destination = Join-Path $deploymentRoot $_
-  (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
+  -not (Test-Path -LiteralPath $destination) -or
+    (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash -ne (Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash
 })
 
 $candidatePath = Join-Path ([IO.Path]::GetTempPath()) "deploy-schema-v2-$([guid]::NewGuid().ToString('N')).json"
@@ -128,7 +132,7 @@ Compress-Archive -LiteralPath $deploymentRoot -DestinationPath $backupFullPath -
 $originalFiles = @{}
 foreach ($file in $outdatedRuntimeFiles) {
   $path = Join-Path $deploymentRoot $file
-  $originalFiles[$path] = [IO.File]::ReadAllBytes($path)
+  $originalFiles[$path] = if (Test-Path -LiteralPath $path) { [IO.File]::ReadAllBytes($path) } else { $null }
 }
 if ($configChanged) { $originalFiles[$configPath] = [IO.File]::ReadAllBytes($configPath) }
 
@@ -145,7 +149,8 @@ try {
 } catch {
   $migrationError = $_
   foreach ($entry in $originalFiles.GetEnumerator()) {
-    Set-AtomicBytes ([string]$entry.Key) ([byte[]]$entry.Value) 'rollback'
+    if ($null -eq $entry.Value) { Remove-Item -LiteralPath ([string]$entry.Key) -Force -ErrorAction SilentlyContinue }
+    else { Set-AtomicBytes ([string]$entry.Key) ([byte[]]$entry.Value) 'rollback' }
   }
   throw "Migration failed and project files were restored. Backup: $backupFullPath. Error: $($migrationError.Exception.Message)"
 }

@@ -49,6 +49,7 @@ Add-Check 'public-origins-customized' (-not $placeholderOrigin) 'Replace the tem
 
 $portExpectations = [Collections.Generic.List[object]]::new()
 $portExpectations.Add([pscustomobject]@{ port = [int]$script:DeploymentConfig.listenPort; serviceName = Get-CaddyServiceName; loopbackOnly = $false })
+$portExpectations.Add([pscustomobject]@{ port = Get-DeploymentCaddyAdminPort; serviceName = Get-CaddyServiceName; loopbackOnly = $true })
 foreach ($service in @($script:DeploymentConfig.services | Where-Object { $_.type -eq 'api' })) {
   foreach ($slot in @('blue', 'green')) {
     $portExpectations.Add([pscustomobject]@{ port = Get-DeploymentPort $service $slot; serviceName = Get-DeploymentServiceName $service $slot; loopbackOnly = $true })
@@ -81,7 +82,9 @@ $driveInfo = Get-PSDrive -Name $drive.Substring(0, 1) -ErrorAction SilentlyConti
 $driveDetail = if ($driveInfo) { "Free bytes: $($driveInfo.Free)" } else { "Drive not found: $drive" }
 Add-Check 'production-drive' ([bool]$driveInfo) $driveDetail
 
-Add-Check 'backup-enabled' ([bool]$script:DeploymentConfig.backup.enabled) 'Application-consistent scheduled backup is disabled.' $false
+$backupEnabled = [bool]$script:DeploymentConfig.backup.enabled
+$backupDetail = if ($backupEnabled) { 'Scheduled backup is configured; verify application consistency and perform a restore drill.' } else { 'Application-consistent scheduled backup is disabled.' }
+Add-Check 'backup-enabled' $backupEnabled $backupDetail $false
 Add-Check 'single-host-risk' $false 'Blue/green deployment does not protect against loss of this host.' $false
 
 $checks | Format-Table -AutoSize | Out-String | Write-Host

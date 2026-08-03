@@ -4,6 +4,7 @@
   "servicePrefix": "IntranetApp",
   "productionRoot": "C:\\ProgramData\\IntranetApp",
   "listenPort": 80,
+  "caddyAdminPort": 2029,
   "publicOrigins": [
     "http://10.0.0.10"
   ],

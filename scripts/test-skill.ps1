@@ -35,13 +35,18 @@ function Assert-ConfigRejected($Config, [string]$Path, [string]$Validator, [stri
 
 try {
   New-Item -ItemType Directory -Path $projectRoot -Force | Out-Null
-  Write-TestFile (Join-Path $projectRoot 'package.json') '{"name":"skill-fixture","version":"1.0.0","scripts":{"test":"node --test","build":"node scripts/build.js"}}'
+  Write-TestFile (Join-Path $projectRoot 'package.json') '{"name":"skill-fixture","version":"1.0.0","dependencies":{"next":"16.0.0"},"scripts":{"test":"node --test","build":"node scripts/build.js"}}'
   Write-TestFile (Join-Path $projectRoot 'package-lock.json') '{"name":"skill-fixture","version":"1.0.0","lockfileVersion":3,"packages":{}}'
   Write-TestFile (Join-Path $projectRoot 'server\api.js') "process.on('SIGTERM', () => process.exit(0))`n"
   Write-TestFile (Join-Path $projectRoot 'server\worker.js') "process.on('SIGTERM', () => process.exit(0))`n"
   Write-TestFile (Join-Path $projectRoot 'shared\placeholder.txt') 'fixture'
   Write-TestFile (Join-Path $projectRoot 'dist\index.html') '<!doctype html><title>Fixture</title>'
   Write-TestFile (Join-Path $projectRoot 'scripts\build.js') "process.stdout.write('fixture build')`n"
+  Write-TestFile (Join-Path $projectRoot 'app\api\health\route.ts') "export async function GET(){ return Response.json({ok:true}) }`n"
+
+  $audit = (& (Join-Path $skillRoot 'scripts\audit-project.ps1') -ProjectRoot $projectRoot | Out-String) | ConvertFrom-Json
+  Assert-True ([bool]$audit.runtimeSignals.hasNext) 'Project audit did not detect Next.js.'
+  Assert-True (@($audit.healthCandidates) -contains 'app\api\health\route.ts') 'Project audit did not detect a Next.js health route.'
 
   & (Join-Path $skillRoot 'scripts\scaffold-project.ps1') -ProjectRoot $projectRoot -AppName 'Skill Fixture' | Out-Null
   $configPath = Join-Path $deploymentRoot 'deployment.config.json'
@@ -52,6 +57,7 @@ try {
   }
   $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding utf8
   Write-TestFile (Join-Path $deploymentRoot 'common.ps1') '# simulated customized schema v1 runtime'
+  Remove-Item -LiteralPath (Join-Path $deploymentRoot 'configure-shared-gateway.ps1') -Force
 
   $git = Get-Command git.exe -ErrorAction Stop
   & $git.Source -C $projectRoot init --quiet
@@ -73,6 +79,7 @@ try {
   Assert-Equal 2 $migratedConfig.schemaVersion 'Schema v1 configuration was not migrated.'
   Assert-Equal 'HOST' $migratedConfig.services[0].bindAddressEnvironment 'API bind-address environment was not added.'
   Assert-True (Test-Path -LiteralPath $migrationBackup) 'Migration backup was not created.'
+  Assert-True (Test-Path -LiteralPath (Join-Path $deploymentRoot 'configure-shared-gateway.ps1')) 'Migration did not add the shared-gateway helper.'
   Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $deploymentRoot 'common.ps1')) -match 'Enter-DeploymentOperationLock') 'Schema v2 runtime scripts were not synchronized.'
   $restoredBackup = Join-Path $fixtureRoot 'restored-schema-v1-backup'
   Expand-Archive -LiteralPath $migrationBackup -DestinationPath $restoredBackup
@@ -158,6 +165,7 @@ exit 2
   Assert-Equal $releaseOne (Get-SlotRelease 'blue') 'Initial slot junction is incorrect.'
   Write-DeploymentCaddyfile 'blue'
   $caddyfileOne = Get-Content -Raw -LiteralPath $script:Caddyfile
+  Assert-True $caddyfileOne.Contains('admin 127.0.0.1:2029') 'Caddy did not use the configured unique administration port.'
   Assert-True $caddyfileOne.Contains((Join-Path $releaseOne 'dist').Replace('\', '/')) 'Caddy did not point static traffic at the active immutable release.'
   Set-SlotRelease 'blue' $releaseTwo
   Assert-Equal $releaseTwo (Get-SlotRelease 'blue') 'Slot junction swap is incorrect.'
@@ -205,6 +213,12 @@ exit 2
   $unsafeOrigin.publicOrigins = @('http://127.0.0.1:19080/path')
   Assert-ConfigRejected $unsafeOrigin (Join-Path $deploymentRoot 'deployment.config.bad-origin.json') $validator $projectRoot 'Public origin with a path was accepted.'
 
+  $legacyAdminDefault = $validatedConfigJson | ConvertFrom-Json
+  $legacyAdminDefault.PSObject.Properties.Remove('caddyAdminPort')
+  $legacyAdminPath = Join-Path $deploymentRoot 'deployment.config.legacy-admin-default.json'
+  $legacyAdminDefault | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $legacyAdminPath -Encoding utf8
+  & $validator -ConfigPath $legacyAdminPath -ProjectRoot $projectRoot | Out-Null
+
   $broadFirewall = $validatedConfigJson | ConvertFrom-Json
   $broadFirewall.firewallRemoteAddresses = @('0.0.0.0/0')
   Assert-ConfigRejected $broadFirewall (Join-Path $deploymentRoot 'deployment.config.broad-firewall.json') $validator $projectRoot 'Global firewall range was accepted.'
@@ -213,15 +227,28 @@ exit 2
   $missingBind.services[0].PSObject.Properties.Remove('bindAddressEnvironment')
   Assert-ConfigRejected $missingBind (Join-Path $deploymentRoot 'deployment.config.missing-bind.json') $validator $projectRoot 'API without bindAddressEnvironment was accepted.'
 
+  $adminListenConflict = $validatedConfigJson | ConvertFrom-Json
+  $adminListenConflict.caddyAdminPort = $adminListenConflict.listenPort
+  Assert-ConfigRejected $adminListenConflict (Join-Path $deploymentRoot 'deployment.config.admin-listen-conflict.json') $validator $projectRoot 'Caddy admin port conflicting with listenPort was accepted.'
+
+  $adminSlotConflict = $validatedConfigJson | ConvertFrom-Json
+  $adminSlotConflict.caddyAdminPort = $adminSlotConflict.services[0].bluePort
+  Assert-ConfigRejected $adminSlotConflict (Join-Path $deploymentRoot 'deployment.config.admin-slot-conflict.json') $validator $projectRoot 'Caddy admin port conflicting with an API slot was accepted.'
+
   $profileRoot = $validatedConfigJson | ConvertFrom-Json
   $profileRoot.productionRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) 'UnsafeProductionRoot'
   Assert-ConfigRejected $profileRoot (Join-Path $deploymentRoot 'deployment.config.profile-root.json') $validator $projectRoot 'Production root inside a user profile was accepted.'
 
   $installSource = Get-Content -Raw -LiteralPath (Join-Path $skillRoot 'assets\windows-blue-green\install.ps1')
   Assert-True ($installSource.LastIndexOf('Install-HostSettings') -gt $installSource.LastIndexOf('deploy.ps1')) 'Host settings are applied before a successful deployment.'
+  Assert-True ($installSource -notmatch '& \$serviceExe refresh') 'Installer still calls the unsupported WinSW 2.12 refresh command.'
   $deploySource = Get-Content -Raw -LiteralPath (Join-Path $skillRoot 'assets\windows-blue-green\deploy.ps1')
   $rollbackSource = Get-Content -Raw -LiteralPath (Join-Path $skillRoot 'assets\windows-blue-green\rollback.ps1')
   Assert-True ($deploySource -notmatch 'Publish-DeploymentWeb' -and $rollbackSource -notmatch 'Publish-DeploymentWeb') 'Frontend publishing is still separate from the Caddy cutover.'
+
+  $gatewayOutput = & (Join-Path $deploymentRoot 'configure-shared-gateway.ps1') -ConfigPath $configPath -Hostnames @('fixture.intranet.example') -GatewayCaddyfile 'C:\not-used-in-dry-run\Caddyfile' -GatewayCaddyExe 'C:\not-used-in-dry-run\caddy.exe' 3>&1 | Out-String
+  Assert-True ($gatewayOutput -match 'fixture\.intranet\.example') 'Shared-gateway dry run omitted the hostname.'
+  Assert-True ($gatewayOutput -match '127\.0\.0\.1:19080') 'Shared-gateway dry run omitted the application stable port.'
 
   Write-Output 'All deploy-windows-intranet regression tests passed.'
 } finally {

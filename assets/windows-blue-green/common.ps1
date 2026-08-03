@@ -109,6 +109,11 @@ function Get-DeploymentServiceName($Service, [string]$Slot) {
 }
 
 function Get-CaddyServiceName { return "$($script:DeploymentConfig.servicePrefix)Caddy" }
+function Get-DeploymentCaddyAdminPort {
+  $property = $script:DeploymentConfig.PSObject.Properties['caddyAdminPort']
+  if ($property) { return [int]$property.Value }
+  return 2019
+}
 function Get-MemoryGuardServiceName { return "$($script:DeploymentConfig.servicePrefix)MemoryGuard" }
 function Get-BackupTaskName { return "$($script:DeploymentConfig.servicePrefix) Daily Backup" }
 
@@ -295,6 +300,9 @@ function Stop-DeploymentSlot([string]$Slot) {
 
 function Write-DeploymentCaddyfile([string]$Slot) {
   $lines = [Collections.Generic.List[string]]::new()
+  $lines.Add('{')
+  $lines.Add("  admin 127.0.0.1:$(Get-DeploymentCaddyAdminPort)")
+  $lines.Add('}')
   $lines.Add(":$($script:DeploymentConfig.listenPort) {")
   $index = 0
   foreach ($service in @($script:DeploymentConfig.services | Where-Object { $_.type -eq 'api' })) {
@@ -335,7 +343,7 @@ function Publish-DeploymentCaddyConfiguration([string]$Slot) {
   if (-not $service) { throw "Caddy service is not installed: $serviceName" }
   Set-Service -Name $serviceName -StartupType Automatic
   if ($service.Status -eq 'Running') {
-    & $script:CaddyExe reload --config $script:Caddyfile --adapter caddyfile
+    & $script:CaddyExe reload --address "127.0.0.1:$(Get-DeploymentCaddyAdminPort)" --config $script:Caddyfile --adapter caddyfile
     if ($LASTEXITCODE -ne 0) { throw 'Caddy reload failed.' }
   } else {
     Start-Service -Name $serviceName

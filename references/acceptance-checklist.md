@@ -14,6 +14,7 @@
 - Backup is application-consistent and has an off-host destination, or the missing control is explicitly accepted.
 - `preflight.ps1` reports no blocking errors.
 - Every occupied configured port is owned by the expected WinSW service process tree; a production directory alone is not sufficient.
+- Every Caddy process has a unique loopback administration port; an existing listener on 2019 is not assumed to belong to this application.
 
 ## First Installation
 
@@ -22,6 +23,7 @@
 - Firewall and power settings remain unchanged if the initial release fails before cutover.
 - All generated Windows services have expected executable, working directory, environment, startup type, and recovery settings.
 - The first release passes health checks through loopback and through the stable intranet URL.
+- When using a shared gateway, the route fragment survives a deployment of the gateway-owning project and an existing hostname remains healthy after reload.
 - Static pages and APIs return expected responses from a second intranet machine.
 - Reboot restores Caddy, the active APIs, workers, and memory guard.
 
@@ -42,6 +44,7 @@
 ## Backup and Recovery
 
 - Scheduled backup runs under its configured service account.
+- The scheduled task is triggered once during acceptance and finishes with result code 0.
 - Backup output includes databases, uploaded media, configuration required for recovery, and a manifest.
 - Backup copies leave the host or disk on an approved schedule.
 - A restore drill is performed into an isolated directory and the restored application passes health and data checks.

@@ -46,8 +46,27 @@ if ($rg) {
   $healthCandidates = @(& $rg.Source -l --glob '*.{js,mjs,cjs,ts,tsx}' '(health|ready|readiness|liveness)' $root 2>$null | ForEach-Object {
     Get-ProjectRelativePath $_
   } | Where-Object {
-    $_ -notmatch '\.(test|spec)\.' -and $_ -match '^(server|api|backend|scripts)\\'
+    $_ -notmatch '\.(test|spec)\.' -and $_ -match '^(server|api|backend|scripts|app\\api)\\'
   } | Sort-Object -Unique)
+}
+$healthCandidates = @($healthCandidates + @($relativeFiles | Where-Object {
+  $_ -match '^app\\api\\(health|ready|readiness|liveness)\\route\.(js|ts)$'
+}) | Sort-Object -Unique)
+
+$runtimeSignals = [ordered]@{
+  hasNext = [bool]($package -and $package.PSObject.Properties.Name -contains 'dependencies' -and $package.dependencies.PSObject.Properties.Name -contains 'next')
+  hasVinext = [bool]($package -and $package.PSObject.Properties.Name -contains 'devDependencies' -and $package.devDependencies.PSObject.Properties.Name -contains 'vinext')
+  hasCloudflareConfig = [bool]($relativeFiles | Where-Object { $_ -match '(^|\\)wrangler(\.[^\\]+)?\.(jsonc?|toml)$' } | Select-Object -First 1)
+  importsCloudflareWorkers = $false
+  usesD1 = $false
+  usesKv = $false
+  usesNodeSqlite = $false
+}
+if ($rg) {
+  $runtimeSignals.importsCloudflareWorkers = [bool](& $rg.Source -l --glob '*.{js,mjs,cjs,ts,tsx}' 'cloudflare:workers' $root 2>$null | Select-Object -First 1)
+  $runtimeSignals.usesD1 = [bool](& $rg.Source -l --glob '*.{js,mjs,cjs,ts,tsx,json,jsonc,toml}' '(D1Database|d1_databases|\.DB\b)' $root 2>$null | Select-Object -First 1)
+  $runtimeSignals.usesKv = [bool](& $rg.Source -l --glob '*.{js,mjs,cjs,ts,tsx,json,jsonc,toml}' '(KVNamespace|kv_namespaces|\.MEDIA\b)' $root 2>$null | Select-Object -First 1)
+  $runtimeSignals.usesNodeSqlite = [bool](& $rg.Source -l --glob '*.{js,mjs,cjs,ts,tsx}' '(node:sqlite|better-sqlite3)' $root 2>$null | Select-Object -First 1)
 }
 
 $scripts = [ordered]@{}
@@ -62,7 +81,7 @@ foreach ($directoryName in @('data', 'storage', 'uploads', 'media', 'database', 
   if (Test-Path -LiteralPath (Join-Path $root $directoryName)) { $persistentCandidates.Add("$directoryName\") }
 }
 if ($rg) {
-  foreach ($path in @(& $rg.Source --files --hidden --no-ignore -g '*.db' -g '*.sqlite' -g '*.sqlite3' -g '!node_modules/**' -g '!.git/**' $root 2>$null | Select-Object -First 100)) {
+  foreach ($path in @(& $rg.Source --files --hidden --no-ignore -g '*.db' -g '*.sqlite' -g '*.sqlite3' -g '!node_modules/**' -g '!.git/**' -g '!.sites-runtime/**' -g '!.next/**' $root 2>$null | Select-Object -First 100)) {
     $persistentCandidates.Add((Get-ProjectRelativePath $path))
   }
 }
@@ -76,8 +95,10 @@ $result = [ordered]@{
   healthCandidates = $healthCandidates
   persistentCandidates = @($persistentCandidates | Sort-Object -Unique)
   hasViteConfig = [bool]($relativeFiles | Where-Object { $_ -match '(^|\\)vite\.config\.(js|mjs|ts)$' } | Select-Object -First 1)
+  runtimeSignals = $runtimeSignals
   hasExistingDeployment = Test-Path -LiteralPath (Join-Path $root 'deploy\windows')
   requiresManualReview = @(
+    'Confirm the production framework target and replace any edge-only Cloudflare bindings before selecting standard Node.js.',
     'Confirm API and worker entry points.',
     'Confirm loopback bind-address configuration, health readiness semantics, and graceful shutdown.',
     'Confirm persistent paths, migration compatibility, backup, and restore.',

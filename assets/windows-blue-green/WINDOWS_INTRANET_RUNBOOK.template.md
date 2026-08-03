@@ -11,6 +11,9 @@
 - IT/network contact: TODO
 - Maintenance window: TODO
 - Stable URL: TODO
+- Optional corporate DNS name and A record: TODO
+- Per-application Caddy admin port: TODO
+- Optional shared-gateway owner, route fragment, and admin address: TODO
 - Server hostname and asset ID: TODO
 - Production root: `C:\ProgramData\{{SERVICE_PREFIX}}`
 
@@ -25,6 +28,7 @@ This is single-host resilience against failed releases and process crashes. It d
 - Run Windows 11 Pro or Windows Server on an always-on wired host.
 - Reserve the server IP through DHCP and configure internal DNS.
 - Approve the firewall CIDR and, when available, issue an internal TLS certificate.
+- Inventory every Caddy listener and administration port on the host; assign this application a unique loopback admin port.
 - Install supported Node.js and npm versions system-wide.
 - Keep secrets in system-level environment variables available to `LocalSystem`; reference them as `%VARIABLE_NAME%` and do not put secret values in `deployment.config.json`.
 - Confirm API readiness endpoints, worker graceful shutdown, persistent storage, and backward-compatible database migrations.
@@ -100,6 +104,8 @@ Manual backup:
 ```powershell
 .\deploy\windows\backup.ps1
 ```
+
+Trigger the scheduled task once under its configured account, require result code 0, then restore the newest backup into an isolated data root and verify health plus representative business data.
 
 Document the application-specific isolated restore commands here: TODO.
 
