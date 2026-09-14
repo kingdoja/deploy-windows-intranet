@@ -1,5 +1,7 @@
 # Windows Intranet Deployment Skill
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Deploy Node.js, Next.js, and Vite applications on Windows 11 or Windows Server with repeatable blue/green releases, health-gated cutovers, and one-command rollback.
 
 This project packages the operational knowledge normally hidden in one-off deployment scripts into a versioned, project-owned PowerShell Skill. It gives a small team a practical path from project audit to installation, release, rollback, backup, and handoff - without requiring Codex or a Linux/container platform in production.
@@ -85,10 +87,10 @@ Set-Location C:\src\deploy-windows-intranet
 .\scripts\validate-project.ps1 -ProjectRoot C:\src\my-app
 
 # 5) Review host changes and resolve every blocking finding
-.\deploy\windows\preflight.ps1 -ConfigPath C:\src\my-app\deploy\windows\deployment.config.json
+ & C:\src\my-app\deploy\windows\preflight.ps1 -ConfigPath C:\src\my-app\deploy\windows\deployment.config.json
 
 # 6) Install services, Caddy, scheduled tasks, and the first release
-.\deploy\windows\install.ps1 -ConfigPath C:\src\my-app\deploy\windows\deployment.config.json -ProjectRoot C:\src\my-app
+ & C:\src\my-app\deploy\windows\install.ps1 -ConfigPath C:\src\my-app\deploy\windows\deployment.config.json -ProjectRoot C:\src\my-app
 ```
 
 The generated package is self-contained after scaffolding: operators can run `preflight.ps1`, `install.ps1`, `deploy.ps1`, `rollback.ps1`, `status.ps1`, and `backup.ps1` from the application repository without this Skill checkout.
