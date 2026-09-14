@@ -1,10 +1,30 @@
-# Deploy Windows Intranet
+# Windows Intranet Deployment Skill
 
-Configuration-driven blue/green deployment automation for Node.js, Next.js, and Vite applications running on Windows 11 or Windows Server.
+Deploy Node.js, Next.js, and Vite applications on Windows 11 or Windows Server with repeatable blue/green releases, health-gated cutovers, and one-command rollback.
 
-This project packages the operational knowledge normally hidden in one-off deployment scripts into a versioned, project-owned PowerShell Skill. It gives a small team a repeatable path from project audit to installation, release, rollback, backup, and handoff - without requiring Codex or a Linux/container platform in production.
+This project packages the operational knowledge normally hidden in one-off deployment scripts into a versioned, project-owned PowerShell Skill. It gives a small team a practical path from project audit to installation, release, rollback, backup, and handoff - without requiring Codex or a Linux/container platform in production.
+
+**Best fit:** internal tools, factory dashboards, line-of-business systems, and other Node.js services that must run reliably on a Windows host inside a corporate network.
 
 > **Positioning:** this is single-host deployment resilience, not machine-level high availability. It reduces deployment-caused downtime, but it cannot remove power, disk, operating-system, or host-network failure modes.
+
+## At a glance
+
+| Concern | Included approach |
+| --- | --- |
+| Release strategy | Blue/green slots with immutable release directories |
+| Traffic entry point | Caddy stable listener, with optional shared hostname gateway |
+| Process management | WinSW-managed Windows services for APIs and workers |
+| Cutover gate | Readiness health check plus loopback-only listener verification |
+| Recovery | Preserved rollback target, explicit post-cutover warnings, status command |
+| Data safety | Persistent data outside releases and application-consistent backup contract |
+| Configuration | Versioned JSON schema with strict validation and pinned tool hashes |
+
+## Who should use it
+
+- **Application teams** that need a predictable Windows deployment path without writing and maintaining an entire platform.
+- **IT/operations teams** that want explicit service names, ports, firewall scope, backup ownership, and recovery steps.
+- **Reviewers and interviewers** looking for evidence of failure-aware automation, not just a happy-path shell script.
 
 ## What it solves
 
@@ -46,9 +66,12 @@ Each release is copied into an immutable directory. A `blue/current` or `green/c
 
 ## Quick start
 
-Run these commands from an elevated PowerShell session on the target Windows host. The first four steps are read-only or generate files inside the application repository; installation is the state-changing step.
+The audit, scaffold, migration, and validation commands below are run from this Skill repository and point at the target application. They are not copied into the target application; `scaffold-project.ps1` copies the runtime package into `deploy/windows`. Installation is the state-changing step and must run from an elevated PowerShell session on the target Windows host.
 
 ```powershell
+# From this repository
+Set-Location C:\src\deploy-windows-intranet
+
 # 1) Inspect the application
 .\scripts\audit-project.ps1 -ProjectRoot C:\src\my-app
 
@@ -68,6 +91,8 @@ Run these commands from an elevated PowerShell session on the target Windows hos
 .\deploy\windows\install.ps1 -ConfigPath C:\src\my-app\deploy\windows\deployment.config.json -ProjectRoot C:\src\my-app
 ```
 
+The generated package is self-contained after scaffolding: operators can run `preflight.ps1`, `install.ps1`, `deploy.ps1`, `rollback.ps1`, `status.ps1`, and `backup.ps1` from the application repository without this Skill checkout.
+
 For a normal code-only release:
 
 ```powershell
@@ -76,6 +101,17 @@ For a normal code-only release:
 ```
 
 Use `-AllowDirty` or `-SkipTests` only when the risk is intentional and documented in the Runbook. Configuration/service changes should go through `install.ps1` so obsolete services and scheduled tasks are reconciled.
+
+## What gets generated
+
+Running `scaffold-project.ps1` adds two project-owned artifacts:
+
+| Artifact | Why it matters |
+| --- | --- |
+| `deploy/windows/` | Versioned deployment runtime, configuration, Caddy/WinSW integration, health checks, rollback, backup, and status tooling |
+| `docs/WINDOWS_INTRANET_DEPLOYMENT.md` | Human Runbook with real paths, URLs, owners, maintenance windows, backup destination, and recovery steps |
+
+Keeping these files in the application repository makes deployment behavior reviewable, reproducible, and change-controlled alongside application code.
 
 ## Configuration highlights
 
@@ -127,6 +163,8 @@ Run the isolated regression suite after modifying the Skill or its generated ass
 
 The suite exercises scaffolding, schema migration, configuration rejection, PowerShell parsing, loopback enforcement, operation locking, process-tree memory accounting, slot junction swaps, warning persistence, and obsolete-service detection. Production acceptance still requires a real scheduled-backup run and an isolated restore drill; see [`references/acceptance-checklist.md`](references/acceptance-checklist.md).
 
+For a safe first look, run `scripts/test-skill.ps1`: it uses an isolated temporary fixture and does not install services, open firewall ports, or change power settings on the host.
+
 ## Repository map
 
 | Path | Purpose |
@@ -150,4 +188,12 @@ The design favors explicit operator visibility over "magic": skipped tests, disa
 
 ## Interviewer's takeaway
 
-This repository demonstrates more than a deployment script: it models deployment as a set of contracts and state transitions. The interesting engineering work is in the failure paths - preserving rollback state, preventing port and service collisions, separating persistent data from immutable releases, validating process ownership, and making every risky shortcut observable and reversible.
+This repository demonstrates more than a deployment script: it models deployment as a set of contracts and state transitions. The strongest signals are in the failure paths:
+
+- preserving the previous rollback target when a candidate release fails before cutover;
+- preventing service, port, listener, and Caddy-admin collisions on a shared Windows host;
+- separating persistent data from immutable releases so rollback does not rewrite application state;
+- validating actual process ownership and loopback binding instead of trusting configuration alone;
+- making risky shortcuts (`-SkipTests`, dirty releases, disabled backups) visible and explicit.
+
+That combination shows operational judgment: reliability is enforced through contracts, observable state, and recoverable actions rather than optimistic assumptions.
