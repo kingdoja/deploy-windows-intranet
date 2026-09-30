@@ -188,7 +188,7 @@ This package intentionally targets Windows 11/Windows Server with Node.js, Caddy
 
 The design favors explicit operator visibility over "magic": skipped tests, disabled backups, dirty releases, unresolved post-cutover warnings, and missing restore drills are surfaced as risks that must be accepted and documented.
 
-## Interviewer's takeaway
+## Takeaway
 
 This repository demonstrates more than a deployment script: it models deployment as a set of contracts and state transitions. The strongest signals are in the failure paths:
 
